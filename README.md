@@ -22,7 +22,7 @@
 
 ```bash
 # Clone repository
-git clone https://github.com/ezra-compyle/solar-panel-degradation.git
+git clone https://github.com/TH3SOLO1ST/solar-panel-degradation.git
 cd solar-panel-degradation
 
 # Install dependencies
