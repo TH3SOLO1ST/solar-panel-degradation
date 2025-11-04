@@ -1,310 +1,507 @@
 """
-Thermal Degradation Model
-==========================
+Thermal Degradation Module
 
-Models thermal cycling degradation effects on solar panels.
+This module models thermal cycling degradation effects on solar panels using
+Coffin-Manson relationships and other fatigue models. It handles solder joint
+fatigue, delamination, and temperature-dependent efficiency degradation.
 
-This module implements thermal fatigue models including the Coffin-Manson
-relationship and thermal stress calculations for solar panel degradation.
-
-Classes:
-    ThermalCycling: Thermal cycling degradation analysis
-    ThermalStress: Thermal stress calculation
-    FatigueModel: Material fatigue modeling
+References:
+- "Thermal Fatigue of Solder Joints" - IPC standards
+- "Coffin-Manson Fatigue Analysis" - ASTM standards
+- "Solar Panel Thermal Cycling Reliability" - NASA/ESA
+- "Failure Mechanics of Electronic Materials" - Pecht
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import List, Dict, Optional, Tuple, Union
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+import math
+
+from .thermal_analysis import ThermalAnalysis, ThermalState, ThermalCycle
+
 
 @dataclass
-class ThermalCycle:
-    """Data structure for thermal cycle information"""
-    start_temp: float  # Kelvin
-    end_temp: float    # Kelvin
-    temp_range: float  # Kelvin
-    duration: float    # hours
-    cycle_count: int   # cumulative count
+class ThermalFatigueCoefficients:
+    """Thermal fatigue coefficients for different materials"""
+    # Coffin-Manson coefficients: N_f = C × (ΔT)^(-β)
+    C_coefficient: float        # Fatigue coefficient
+    beta_exponent: float        # Fatigue exponent
+    activation_energy: float    # Activation energy (eV)
+    reference_temp: float       # Reference temperature (K)
 
-class FatigueModel:
-    """Material fatigue modeling for thermal cycling"""
 
-    def __init__(self, material_type: str = "silicon"):
+@dataclass
+class ThermalDegradationState:
+    """Current state of thermal degradation"""
+    fatigue_damage_fraction: float     # Accumulated fatigue damage (0-1)
+    efficiency_degradation_percent: float  # Efficiency loss (%)
+    series_resistance_increase_percent: float  # Series resistance increase (%)
+    delamination_risk: float          # Delamination risk factor (0-1)
+    solder_joint_damage: float        # Solder joint damage (0-1)
+    cycle_count: int                  # Total thermal cycles
+    max_temp_swing_experienced: float # Maximum temperature swing experienced (K)
+
+
+@dataclass
+class TemperatureDependentEfficiency:
+    """Temperature-dependent solar cell efficiency parameters"""
+    temp_coefficient: float      # Temperature coefficient (%/K)
+    reference_temp: float        # Reference temperature (K)
+    reference_efficiency: float  # Efficiency at reference temperature (0-1)
+    bandgap_temp_coeff: float    # Bandgap temperature coefficient (eV/K)
+
+
+class ThermalDegradation:
+    """
+    Comprehensive thermal degradation model for solar panels.
+
+    Features:
+    - Coffin-Manson fatigue analysis
+    - Solder joint fatigue modeling
+    - Delamination risk assessment
+    - Temperature-dependent efficiency
+    - Cumulative damage accumulation
+    - Material-specific fatigue parameters
+    """
+
+    # Physical constants
+    k_B = 8.617333e-5  # Boltzmann constant (eV/K)
+
+    # Default thermal fatigue coefficients for common materials
+    DEFAULT_FATIGUE_COEFFICIENTS = {
+        'solder_joints': ThermalFatigueCoefficients(
+            C_coefficient=1e15,      # Typical for Sn-Pb solder
+            beta_exponent=2.0,       # Low cycle fatigue
+            activation_energy=0.6,   # eV
+            reference_temp=298.15    # K (25°C)
+        ),
+        'silicon_cells': ThermalFatigueCoefficients(
+            C_coefficient=1e20,      # Silicon is more resistant
+            beta_exponent=1.8,       # Slightly better than solder
+            activation_energy=0.8,   # eV
+            reference_temp=298.15    # K
+        ),
+        'interconnects': ThermalFatigueCoefficients(
+            C_coefficient=5e14,      # Most vulnerable
+            beta_exponent=2.2,       # High fatigue sensitivity
+            activation_energy=0.5,   # eV
+            reference_temp=298.15    # K
+        )
+    }
+
+    # Default temperature-dependent efficiency parameters
+    DEFAULT_EFFICIENCY_PARAMS = TemperatureDependentEfficiency(
+        temp_coefficient=-0.004,    # -0.4%/K for silicon
+        reference_temp=298.15,      # K (25°C)
+        reference_efficiency=0.20,  # 20% efficiency at reference
+        bandgap_temp_coeff=-4.73e-4 # eV/K for silicon
+    )
+
+    # Temperature thresholds for degradation
+    MIN_TEMP_K = 173.15     # -100°C minimum operating temperature
+    MAX_TEMP_K = 423.15     # 150°C maximum operating temperature
+    STRESS_TEMP_K = 373.15  # 100°C stress temperature
+
+    def __init__(self, cell_technology: str = "silicon",
+                 custom_fatigue_coeffs: Optional[Dict[str, ThermalFatigueCoefficients]] = None,
+                 custom_efficiency_params: Optional[TemperatureDependentEfficiency] = None):
         """
-        Initialize fatigue model
+        Initialize thermal degradation model
 
         Args:
-            material_type: Material type ('silicon', 'germanium', 'composite')
+            cell_technology: Solar cell technology type
+            custom_fatigue_coeffs: Custom fatigue coefficients
+            custom_efficiency_params: Custom efficiency parameters
         """
-        self.material_type = material_type
-        self._initialize_fatigue_parameters()
+        self.cell_technology = cell_technology
 
-    def _initialize_fatigue_parameters(self):
-        """Initialize fatigue parameters based on material type"""
-        if self.material_type == "silicon":
-            self.C_coefficient = 1e15  # Coffin-Manson coefficient
-            self.beta_exponent = 4.0    # Coffin-Manson exponent
-            self.fatigue_limit = 5.0    # K (minimum temperature range for fatigue)
-        elif self.material_type == "germanium":
-            self.C_coefficient = 5e14
-            self.beta_exponent = 3.5
-            self.fatigue_limit = 3.0
-        else:  # composite materials
-            self.C_coefficient = 2e16
-            self.beta_exponent = 5.0
-            self.fatigue_limit = 8.0
+        # Set fatigue coefficients
+        if custom_fatigue_coeffs:
+            self.fatigue_coeffs = custom_fatigue_coeffs
+        else:
+            self.fatigue_coeffs = self.DEFAULT_FATIGUE_COEFFICIENTS.copy()
 
-    def calculate_cycles_to_failure(self, temperature_range: float) -> float:
+        # Set efficiency parameters
+        if custom_efficiency_params:
+            self.efficiency_params = custom_efficiency_params
+        else:
+            self.efficiency_params = self.DEFAULT_EFFICIENCY_PARAMS
+
+        # Initialize degradation state
+        self.degradation_state = ThermalDegradationState(
+            fatigue_damage_fraction=0.0,
+            efficiency_degradation_percent=0.0,
+            series_resistance_increase_percent=0.0,
+            delamination_risk=0.0,
+            solder_joint_damage=0.0,
+            cycle_count=0,
+            max_temp_swing_experienced=0.0
+        )
+
+        # Track cycle history
+        self.cycle_history: List[ThermalCycle] = []
+
+    def calculate_coffin_manson_cycles(self, temp_swing_K: float,
+                                     max_temp_K: float,
+                                     material: str = "solder_joints") -> float:
         """
         Calculate number of cycles to failure using Coffin-Manson relationship
 
         Args:
-            temperature_range: Temperature swing in Kelvin
+            temp_swing_K: Temperature swing ΔT (K)
+            max_temp_K: Maximum temperature in cycle (K)
+            material: Material type for fatigue coefficients
 
         Returns:
             Number of cycles to failure
         """
-        if temperature_range < self.fatigue_limit:
-            return float('inf')  # No fatigue damage for small cycles
+        if material not in self.fatigue_coeffs:
+            material = "solder_joints"
 
-        # Coffin-Manson: N_f = C × (ΔT)^(-β)
-        cycles_to_failure = self.C_coefficient * (temperature_range ** (-self.beta_exponent))
+        coeffs = self.fatigue_coeffs[material]
+
+        # Temperature correction factor (Arrhenius)
+        temp_correction = np.exp(
+            -coeffs.activation_energy / self.k_B *
+            (1/max_temp_K - 1/coeffs.reference_temp)
+        )
+
+        # Coffin-Manson relationship: N_f = C × (ΔT)^(-β)
+        if temp_swing_K <= 0:
+            return float('inf')
+
+        cycles_to_failure = (coeffs.C_coefficient *
+                           (temp_swing_K ** (-coeffs.beta_exponent)) *
+                           temp_correction)
 
         return cycles_to_failure
 
-    def calculate_fatigue_damage(self, temperature_range: float,
-                                cycle_count: int) -> float:
+    def calculate_fatigue_damage_contribution(self, cycle: ThermalCycle,
+                                            material: str = "solder_joints") -> float:
         """
-        Calculate fatigue damage accumulation using Miner's rule
+        Calculate fatigue damage contribution from a single cycle
 
         Args:
-            temperature_range: Temperature swing in Kelvin
-            cycle_count: Number of cycles experienced
+            cycle: Thermal cycle information
+            material: Material type
 
         Returns:
-            Damage accumulation (0 to 1, where 1 = failure)
+            Damage fraction (0-1, accumulates to 1 at failure)
         """
-        cycles_to_failure = self.calculate_cycles_to_failure(temperature_range)
+        cycles_to_failure = self.calculate_coffin_manson_cycles(
+            cycle.temperature_swing,
+            cycle.max_temperature,
+            material
+        )
 
         if cycles_to_failure == float('inf'):
             return 0.0
 
-        # Miner's rule: D = Σ (n_i / N_f_i)
-        damage = cycle_count / cycles_to_failure
+        # Miner's rule: Damage = 1/N_f for each cycle
+        damage_contribution = 1.0 / cycles_to_failure
 
-        return min(1.0, damage)
+        return min(1.0, damage_contribution)
 
-class ThermalStress:
-    """Thermal stress calculation and analysis"""
-
-    def __init__(self, material_properties: Dict = None):
+    def calculate_delamination_risk(self, cycles: List[ThermalCycle]) -> float:
         """
-        Initialize thermal stress calculator
+        Calculate delamination risk from thermal cycling
 
         Args:
-            material_properties: Dictionary of material properties
-        """
-        self.material_properties = material_properties or self._get_default_properties()
-
-    def _get_default_properties(self) -> Dict:
-        """Get default material properties"""
-        return {
-            'cte': 2.6e-6,      # Coefficient of thermal expansion (1/K)
-            'elastic_modulus': 130e9,  # Elastic modulus (Pa)
-            'poisson_ratio': 0.28,     # Poisson's ratio
-            'yield_strength': 7e9,     # Yield strength (Pa)
-            'thermal_conductivity': 130  # W/(m·K)
-        }
-
-    def calculate_thermal_stress(self, temperature_change: float,
-                               constraint_factor: float = 1.0) -> float:
-        """
-        Calculate thermal stress from temperature change
-
-        Args:
-            temperature_change: Temperature change in Kelvin
-            constraint_factor: Degree of constraint (0 = free, 1 = fully constrained)
+            cycles: List of thermal cycles
 
         Returns:
-            Thermal stress in Pascals
+            Delamination risk factor (0-1)
         """
-        # Thermal stress: σ = E × α × ΔT × constraint_factor
-        thermal_stress = (self.material_properties['elastic_modulus'] *
-                         self.material_properties['cte'] *
-                         temperature_change *
-                         constraint_factor)
-
-        return thermal_stress
-
-    def calculate_stress_intensity(self, thermal_stress: float,
-                                 flaw_size: float = 1e-3) -> float:
-        """
-        Calculate stress intensity factor for fracture mechanics
-
-        Args:
-            thermal_stress: Applied thermal stress in Pa
-            flaw_size: Characteristic flaw size in meters
-
-        Returns:
-            Stress intensity factor in MPa√m
-        """
-        # Simplified: K_I = σ × √(π × a)
-        stress_intensity = thermal_stress * np.sqrt(np.pi * flaw_size)
-
-        return stress_intensity / 1e6  # Convert to MPa√m
-
-class ThermalCycling:
-    """Main thermal cycling degradation analysis class"""
-
-    def __init__(self, material_type: str = "silicon"):
-        """
-        Initialize thermal cycling analysis
-
-        Args:
-            material_type: Material type for fatigue calculations
-        """
-        self.fatigue_model = FatigueModel(material_type)
-        self.stress_calculator = ThermalStress()
-
-    def analyze_thermal_cycles(self, temperatures: np.ndarray,
-                             time_hours: np.ndarray) -> List[ThermalCycle]:
-        """
-        Identify and analyze thermal cycles in temperature profile
-
-        Args:
-            temperatures: Array of temperatures in Kelvin
-            time_hours: Array of time points in hours
-
-        Returns:
-            List of ThermalCycle objects
-        """
-        if len(temperatures) < 2:
-            return []
-
-        cycles = []
-        cycle_count = 0
-
-        # Simple peak-valley cycle counting algorithm
-        i = 0
-        while i < len(temperatures) - 1:
-            # Find local maximum or minimum
-            if i == 0:
-                direction = 1 if temperatures[1] > temperatures[0] else -1
-            else:
-                direction = 1 if temperatures[i+1] > temperatures[i] else -1
-
-            # Find next extremum
-            start_idx = i
-            start_temp = temperatures[i]
-
-            # Continue until direction changes
-            while i < len(temperatures) - 1 and (
-                (direction > 0 and temperatures[i+1] >= temperatures[i]) or
-                (direction < 0 and temperatures[i+1] <= temperatures[i])
-            ):
-                i += 1
-
-            if i < len(temperatures) - 1:
-                # Found a cycle
-                end_temp = temperatures[i]
-                temp_range = abs(end_temp - start_temp)
-                duration = time_hours[i] - time_hours[start_idx]
-
-                if temp_range > 5.0:  # Minimum temperature range for significant cycles
-                    cycle_count += 1
-                    cycles.append(ThermalCycle(
-                        start_temp=start_temp,
-                        end_temp=end_temp,
-                        temp_range=temp_range,
-                        duration=duration,
-                        cycle_count=cycle_count
-                    ))
-
-                i += 1
-            else:
-                break
-
-        return cycles
-
-    def calculate_thermal_degradation(self, temperatures: np.ndarray,
-                                    time_hours: np.ndarray) -> Dict:
-        """
-        Calculate overall thermal degradation
-
-        Args:
-            temperatures: Array of temperatures in Kelvin
-            time_hours: Array of time points in hours
-
-        Returns:
-            Dictionary with degradation results
-        """
-        # Analyze thermal cycles
-        cycles = self.analyze_thermal_cycles(temperatures, time_hours)
-
         if not cycles:
-            return {
-                'total_degradation': 0.0,
-                'fatigue_damage': 0.0,
-                'thermal_stress_damage': 0.0,
-                'cycle_count': 0,
-                'max_temperature_range': 0.0
-            }
+            return 0.0
 
-        # Calculate fatigue damage for each cycle
-        total_fatigue_damage = 0.0
-        max_stress = 0.0
+        # Factors that increase delamination risk
+        max_temp_swing = max(cycle.temperature_swing for cycle in cycles)
+        avg_heating_rate = np.mean([cycle.heating_rate for cycle in cycles if cycle.heating_rate > 0])
+        avg_cooling_rate = np.mean([cycle.cooling_rate for cycle in cycles if cycle.cooling_rate > 0])
+        total_cycles = len(cycles)
 
-        for cycle in cycles:
-            # Fatigue damage for this cycle
-            cycle_damage = self.fatigue_model.calculate_fatigue_damage(
-                cycle.temp_range, 1
-            )
-            total_fatigue_damage += cycle_damage
+        # High temperature swings increase risk
+        swing_risk = min(1.0, max_temp_swing / 200.0)  # Normalize by 200K swing
 
-            # Maximum thermal stress
-            stress = self.stress_calculator.calculate_thermal_stress(
-                cycle.temp_range / 2  # Approximate as half the temperature range
-            )
-            max_stress = max(max_stress, stress)
+        # Rapid temperature changes increase risk
+        heating_risk = min(1.0, avg_heating_rate / 100.0)  # Normalize by 100K/hour
+        cooling_risk = min(1.0, avg_cooling_rate / 100.0)
 
-        # Total thermal degradation (simplified model)
-        # Combine fatigue and stress effects
-        fatigue_degradation = min(1.0, total_fatigue_damage)
-        stress_degradation = min(1.0, max_stress / self.stress_calculator.material_properties['yield_strength'])
+        # Number of cycles increases risk (logarithmic scale)
+        cycle_risk = min(1.0, np.log10(total_cycles + 1) / 6.0)  # Normalize by 1e6 cycles
 
-        # Combined degradation (conservative approach)
-        total_degradation = min(1.0, fatigue_degradation + stress_degradation)
+        # Combined risk (weighted average)
+        delamination_risk = (0.4 * swing_risk +
+                           0.25 * heating_risk +
+                           0.25 * cooling_risk +
+                           0.1 * cycle_risk)
 
-        return {
-            'total_degradation': total_degradation,
-            'fatigue_damage': fatigue_degradation,
-            'thermal_stress_damage': stress_degradation,
-            'cycle_count': len(cycles),
-            'max_temperature_range': max(c.temp_range for c in cycles) if cycles else 0.0,
-            'max_thermal_stress': max_stress,
-            'cycles': cycles
-        }
+        return min(1.0, delamination_risk)
 
-    def get_temperature_coefficient_effect(self, temperatures: np.ndarray,
-                                         reference_temp: float = 298.0) -> np.ndarray:
+    def calculate_temperature_dependent_efficiency(self, temperature_K: float) -> float:
         """
-        Calculate temperature coefficient effects on efficiency
+        Calculate solar cell efficiency at given temperature
 
         Args:
-            temperatures: Array of temperatures in Kelvin
-            reference_temp: Reference temperature for coefficient calculation
+            temperature_K: Cell temperature in Kelvin
 
         Returns:
-            Array of efficiency factors due to temperature
+            Efficiency factor relative to reference (0-1)
         """
-        # Temperature coefficient for silicon solar cells: -0.004 to -0.005 per K
-        temp_coefficient = -0.0045  # per K
+        # Linear temperature coefficient model
+        delta_T = temperature_K - self.efficiency_params.reference_temp
 
-        # Efficiency factor: η(T) = η₀ × [1 + α_T × (T - T_ref)]
-        temp_diff = temperatures - reference_temp
-        efficiency_factor = 1 + temp_coefficient * temp_diff
+        # Efficiency degradation: η(T) = η_ref × [1 + α_T × (T - T_ref)]
+        efficiency_factor = 1.0 + (self.efficiency_params.temp_coefficient *
+                                  delta_T / 100.0)  # Convert %/K to fraction
 
-        # Ensure reasonable bounds
-        efficiency_factor = np.clip(efficiency_factor, 0.3, 1.2)
+        # Account for bandgap changes at extreme temperatures
+        if temperature_K < 200 or temperature_K > 400:
+            # Additional degradation at temperature extremes
+            bandgap_factor = 1.0 - 0.1 * abs(temperature_K - 298.15) / 100.0
+            efficiency_factor *= bandgap_factor
 
-        return efficiency_factor
+        return max(0.1, min(1.0, efficiency_factor))
+
+    def update_degradation_state(self, new_cycles: List[ThermalCycle],
+                               current_temperature_K: float) -> ThermalDegradationState:
+        """
+        Update degradation state with new thermal cycles
+
+        Args:
+            new_cycles: List of new thermal cycles to process
+            current_temperature_K: Current operating temperature
+
+        Returns:
+            Updated degradation state
+        """
+        if not new_cycles:
+            return self.degradation_state
+
+        # Update cycle count
+        self.degradation_state.cycle_count += len(new_cycles)
+
+        # Track maximum temperature swing
+        max_swing = max(cycle.temperature_swing for cycle in new_cycles)
+        self.degradation_state.max_temp_swing_experienced = max(
+            self.degradation_state.max_temp_swing_experienced, max_swing
+        )
+
+        # Calculate fatigue damage for each material
+        total_fatigue_damage = 0.0
+        solder_damage = 0.0
+
+        for cycle in new_cycles:
+            # Solder joint damage (most critical)
+            solder_damage += self.calculate_fatigue_damage_contribution(cycle, "solder_joints")
+
+            # Silicon cell damage
+            silicon_damage = self.calculate_fatigue_damage_contribution(cycle, "silicon_cells")
+            total_fatigue_damage += silicon_damage
+
+            # Interconnect damage
+            interconnect_damage = self.calculate_fatigue_damage_contribution(cycle, "interconnects")
+            total_fatigue_damage += interconnect_damage
+
+        # Update damage states
+        self.degradation_state.solder_joint_damage = min(1.0, self.degradation_state.solder_joint_damage + solder_damage)
+        self.degradation_state.fatigue_damage_fraction = min(1.0, self.degradation_state.fatigue_damage_fraction + total_fatigue_damage)
+
+        # Update delamination risk
+        self.cycle_history.extend(new_cycles)
+        self.degradation_state.delamination_risk = self.calculate_delamination_risk(self.cycle_history)
+
+        # Calculate efficiency degradation from fatigue
+        fatigue_efficiency_loss = self.degradation_state.fatigue_damage_fraction * 5.0  # Max 5% loss from fatigue
+
+        # Temperature-dependent efficiency factor
+        temp_efficiency_factor = self.calculate_temperature_dependent_efficiency(current_temperature_K)
+        temp_efficiency_loss = (1.0 - temp_efficiency_factor) * 100.0  # Convert to percentage
+
+        # Total efficiency degradation
+        self.degradation_state.efficiency_degradation_percent = fatigue_efficiency_loss + max(0.0, temp_efficiency_loss)
+
+        # Calculate series resistance increase
+        self.degradation_state.series_resistance_increase_percent = (
+            self.degradation_state.solder_joint_damage * 50.0 +  # Up to 50% increase from solder damage
+            self.degradation_state.fatigue_damage_fraction * 20.0  # Additional from general fatigue
+        )
+
+        # Store updated cycles
+        self.cycle_history.extend(new_cycles)
+
+        return self.degradation_state
+
+    def predict_lifetime_thermal_degradation(self, thermal_analysis: ThermalAnalysis,
+                                           start_time: datetime,
+                                           duration_years: float,
+                                           time_step_hours: float = 1.0) -> List[ThermalDegradationState]:
+        """
+        Predict thermal degradation over mission lifetime
+
+        Args:
+            thermal_analysis: Thermal analysis instance
+            start_time: Mission start time
+            duration_years: Mission duration in years
+            time_step_hours: Time step for analysis
+
+        Returns:
+            List of degradation states over time
+        """
+        degradation_timeline = []
+        current_time = start_time
+        end_time = start_time + timedelta(days=duration_years * 365.25)
+
+        # Reset degradation state
+        self.degradation_state = ThermalDegradationState(
+            fatigue_damage_fraction=0.0,
+            efficiency_degradation_percent=0.0,
+            series_resistance_increase_percent=0.0,
+            delamination_risk=0.0,
+            solder_joint_damage=0.0,
+            cycle_count=0,
+            max_temp_swing_experienced=0.0
+        )
+        self.cycle_history = []
+
+        # Panel normal (assuming Sun-pointing panel)
+        panel_normal = np.array([0, 0, 1])
+
+        # Process in batches to analyze thermal cycles
+        batch_duration_hours = min(168, time_step_hours * 100)  # Weekly or 100 steps
+
+        while current_time <= end_time:
+            batch_end = min(current_time + timedelta(hours=batch_duration_hours), end_time)
+
+            # Solve thermal analysis for this batch
+            batch_states = thermal_analysis.solve_thermal_equation(
+                initial_temp_K=298.15,  # Start at room temperature
+                time_span_hours=(batch_end - current_time).total_seconds() / 3600.0,
+                time_step_hours=time_step_hours,
+                panel_normal=panel_normal,
+                start_time=current_time
+            )
+
+            # Analyze thermal cycles in this batch
+            new_cycles = thermal_analysis.analyze_thermal_cycles(batch_states)
+
+            # Update degradation state
+            if batch_states:
+                current_temp = batch_states[-1].temperature  # Use last temperature
+                self.update_degradation_state(new_cycles, current_temp)
+
+            # Store current state (deep copy)
+            current_state = ThermalDegradationState(
+                fatigue_damage_fraction=self.degradation_state.fatigue_damage_fraction,
+                efficiency_degradation_percent=self.degradation_state.efficiency_degradation_percent,
+                series_resistance_increase_percent=self.degradation_state.series_resistance_increase_percent,
+                delamination_risk=self.degradation_state.delamination_risk,
+                solder_joint_damage=self.degradation_state.solder_joint_damage,
+                cycle_count=self.degradation_state.cycle_count,
+                max_temp_swing_experienced=self.degradation_state.max_temp_swing_experienced
+            )
+            degradation_timeline.append(current_state)
+
+            current_time = batch_end
+
+        return degradation_timeline
+
+    def get_thermal_mitigation_recommendations(self) -> Dict[str, Union[str, List[str]]]:
+        """
+        Get recommendations for thermal degradation mitigation
+
+        Returns:
+            Dictionary with mitigation recommendations
+        """
+        recommendations = {
+            'risk_level': 'low',
+            'primary_concerns': [],
+            'mitigation_strategies': []
+        }
+
+        # Assess risk level
+        if self.degradation_state.fatigue_damage_fraction > 0.5:
+            recommendations['risk_level'] = 'high'
+        elif self.degradation_state.fatigue_damage_fraction > 0.2:
+            recommendations['risk_level'] = 'medium'
+
+        # Identify primary concerns
+        if self.degradation_state.solder_joint_damage > 0.3:
+            recommendations['primary_concerns'].append('Solder joint fatigue')
+
+        if self.degradation_state.delamination_risk > 0.4:
+            recommendations['primary_concerns'].append('Delamination risk')
+
+        if self.degradation_state.max_temp_swing_experienced > 150:
+            recommendations['primary_concerns'].append('Extreme temperature swings')
+
+        if self.degradation_state.efficiency_degradation_percent > 5:
+            recommendations['primary_concerns'].append('Significant efficiency loss')
+
+        # Generate mitigation strategies
+        if self.degradation_state.solder_joint_damage > 0.2:
+            recommendations['mitigation_strategies'].extend([
+                'Use lead-free solder with improved fatigue resistance',
+                'Implement compliant interconnects',
+                'Add strain relief mechanisms'
+            ])
+
+        if self.degradation_state.delamination_risk > 0.3:
+            recommendations['mitigation_strategies'].extend([
+                'Use advanced encapsulation materials',
+                'Improve adhesive bonding processes',
+                'Add moisture barrier layers'
+            ])
+
+        if self.degradation_state.max_temp_swing_experienced > 100:
+            recommendations['mitigation_strategies'].extend([
+                'Implement thermal mass or phase change materials',
+                'Use active thermal control systems',
+                'Optimize orbital attitude to reduce temperature extremes'
+            ])
+
+        if not recommendations['mitigation_strategies']:
+            recommendations['mitigation_strategies'] = [
+                'Continue monitoring thermal cycles',
+                'Regular inspection during maintenance periods'
+            ]
+
+        return recommendations
+
+    def get_degradation_summary(self) -> Dict:
+        """
+        Get comprehensive thermal degradation summary
+
+        Returns:
+            Dictionary with degradation analysis
+        """
+        return {
+            'cell_technology': self.cell_technology,
+            'degradation_state': {
+                'fatigue_damage_fraction': self.degradation_state.fatigue_damage_fraction,
+                'fatigue_damage_percent': self.degradation_state.fatigue_damage_fraction * 100.0,
+                'efficiency_degradation_percent': self.degradation_state.efficiency_degradation_percent,
+                'series_resistance_increase_percent': self.degradation_state.series_resistance_increase_percent,
+                'delamination_risk': self.degradation_state.delamination_risk,
+                'solder_joint_damage': self.degradation_state.solder_joint_damage,
+                'solder_joint_damage_percent': self.degradation_state.solder_joint_damage * 100.0,
+                'cycle_count': self.degradation_state.cycle_count,
+                'max_temp_swing_experienced_K': self.degradation_state.max_temp_swing_experienced
+            },
+            'fatigue_coefficients': {
+                material: {
+                    'C_coefficient': coeffs.C_coefficient,
+                    'beta_exponent': coeffs.beta_exponent,
+                    'activation_energy': coeffs.activation_energy
+                }
+                for material, coeffs in self.fatigue_coeffs.items()
+            },
+            'efficiency_parameters': {
+                'temp_coefficient_per_K': self.efficiency_params.temp_coefficient,
+                'reference_temp_K': self.efficiency_params.reference_temp,
+                'reference_efficiency': self.efficiency_params.reference_efficiency
+            },
+            'mitigation_recommendations': self.get_thermal_mitigation_recommendations()
+        }
