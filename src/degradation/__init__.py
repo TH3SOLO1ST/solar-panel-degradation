@@ -1,11 +1,19 @@
 """
-Solar Panel Degradation Module
+Degradation Module
+==================
 
-This module provides tools for calculating power output degradation
-over the lifetime of solar panels in orbit.
+This module combines all degradation mechanisms into a comprehensive
+lifetime model for solar panel performance prediction.
+
+Key Features:
+- Combined radiation, thermal, and contamination degradation
+- Instantaneous power output calculation
+- Lifetime power trend prediction
+- Multiple solar cell technologies
+- Environmental factor integration
+
+Classes:
+    PowerCalculator: Instantaneous power output calculations
+    LifetimeModel: Combined degradation modeling
+    DegradationEngine: Main degradation prediction engine
 """
-
-from .power_calculator import PowerCalculator
-from .lifetime_model import LifetimeDegradationModel
-
-__all__ = ["PowerCalculator", "LifetimeDegradationModel"]

@@ -1,11 +1,18 @@
 """
 Configuration Module
+====================
 
-This module provides tools for handling scenario configuration,
-data formats, and input validation.
+This module handles scenario configuration, data formats, and
+pre-configured satellite scenarios for the solar panel degradation tool.
+
+Key Features:
+- Pre-configured satellite scenarios (ISS, GEO, SSO)
+- Scenario configuration management
+- Data format definitions
+- User-friendly configuration options
+
+Classes:
+    ScenarioConfig: Scenario configuration management
+    SatelliteSpecs: Satellite specifications
+    DataFormats: Data format definitions
 """
-
-from .scenario_config import ScenarioConfig
-from .data_formats import DataFormats
-
-__all__ = ["ScenarioConfig", "DataFormats"]

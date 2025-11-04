@@ -1,639 +1,347 @@
 """
-Scenario Configuration Module
+Scenario Configuration
+======================
 
-This module handles scenario configuration, validation, and management for solar panel
-degradation analysis. It provides structured configuration schemas, validation,
-and template generation for different mission scenarios.
+Manages pre-configured satellite scenarios and user configuration.
 
-References:
-- JSON Schema validation standards
-- Pydantic configuration management
-- NASA Mission Configuration Guidelines
-- ESA Configuration Management Standards
+This module provides ready-to-use scenarios for common satellite types
+and handles custom scenario configuration.
+
+Classes:
+    ScenarioConfig: Main scenario configuration class
+    PresetScenarios: Pre-configured satellite scenarios
 """
 
 import json
-import yaml
-from typing import Dict, List, Optional, Union, Any
-from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
-from enum import Enum
-
-try:
-    from pydantic import BaseModel, Field, validator, root_validator
-    from pydantic.types import confloat, confloat_ge, conint
-except ImportError:
-    raise ImportError("Pydantic required for configuration management. Install with: pip install pydantic")
-
-
-class OrbitType(str, Enum):
-    """Supported orbit types"""
-    LEO = "LEO"
-    MEO = "MEO"
-    GEO = "GEO"
-    SSO = "SSO"
-    MOLNIYA = "MOLNIYA"
-    CUSTOM = "CUSTOM"
-
-
-class SolarCellTechnology(str, Enum):
-    """Supported solar cell technologies"""
-    SILICON = "silicon"
-    MULTI_JUNCTION_GAAS = "multi_junction_gaas"
-    MULTI_JUNCTION_INGAP = "multi_junction_inGaP"
-    THIN_FILM = "thin_film"
-    PEROVSKITE = "perovskite"
-
-
-class RadiationModel(str, Enum):
-    """Supported radiation models"""
-    AE8_AP8 = "AE8/AP8"
-    AP9_AT9 = "AP9/AT9"
-    CREME96 = "CREME96"
-    SIMPLIFIED = "simplified"
-
-
-class ThermalModel(str, Enum):
-    """Supported thermal models"""
-    DETAILED = "detailed"
-    SIMPLIFIED = "simplified"
-    STEADY_STATE = "steady_state"
-
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, asdict
 
 @dataclass
-class OrbitalElements:
-    """Keplerian orbital elements"""
-    semi_major_axis_km: float
-    eccentricity: float
+class SatelliteSpecs:
+    """Satellite specifications"""
+    name: str
+    description: str
+    orbit_type: str
+    altitude_km: float
     inclination_deg: float
-    raan_deg: float  # Right Ascension of Ascending Node
-    arg_perigee_deg: float  # Argument of Perigee
-    mean_anomaly_deg: float
-    epoch: datetime
+    eccentricity: float
+    period_minutes: float
+    solar_panel_tech: str
+    panel_area_m2: float
+    initial_efficiency: float
+    mission_duration_years: float
+    expected_degradation_pct: float
 
+class PresetScenarios:
+    """Pre-configured satellite scenarios"""
 
-class OrbitConfig(BaseModel):
-    """Orbital configuration"""
-    orbit_type: OrbitType = Field(..., description="Type of orbit")
-    altitude_km: Optional[confloat_ge=100] = Field(None, description="Altitude above Earth surface")
-    inclination_deg: Optional[confloat(ge=0, le=180)] = Field(None, description="Orbital inclination")
-    eccentricity: Optional[confloat_ge=0] = Field(0.0, description="Orbital eccentricity")
-    period_hours: Optional[float] = Field(None, description="Orbital period")
-    # Advanced orbital elements for custom orbits
-    semi_major_axis_km: Optional[float] = Field(None, description="Semi-major axis")
-    raan_deg: Optional[float] = Field(0.0, description="Right Ascension of Ascending Node")
-    arg_perigee_deg: Optional[float] = Field(0.0, description="Argument of Perigee")
-    mean_anomaly_deg: Optional[float] = Field(0.0, description="Mean Anomaly at epoch")
-    epoch: Optional[datetime] = Field(default_factory=datetime.now, description="Orbital epoch")
+    @staticmethod
+    def get_iss_scenario() -> SatelliteSpecs:
+        """Get ISS-like satellite scenario"""
+        return SatelliteSpecs(
+            name="International Space Station (ISS)",
+            description="Solar panels similar to those on the International Space Station",
+            orbit_type="LEO",
+            altitude_km=408.0,
+            inclination_deg=51.64,
+            eccentricity=0.0001,
+            period_minutes=92.9,
+            solar_panel_tech="silicon",
+            panel_area_m2=32.4,
+            initial_efficiency=0.18,
+            mission_duration_years=7.0,
+            expected_degradation_pct=20.0
+        )
 
-    @validator('semi_major_axis_km')
-    def validate_semi_major_axis(cls, v, values):
-        if v is None and values.get('altitude_km') is not None:
-            # Calculate from altitude (assuming circular orbit)
-            return 6378.137 + values['altitude_km']
-        return v
+    @staticmethod
+    def get_geo_scenario() -> SatelliteSpecs:
+        """Get GEO communications satellite scenario"""
+        return SatelliteSpecs(
+            name="GEO Communications Satellite",
+            description="Like satellites for TV and radio broadcasting",
+            orbit_type="GEO",
+            altitude_km=35786.0,
+            inclination_deg=0.0,
+            eccentricity=0.0,
+            period_minutes=1440.0,  # 24 hours
+            solar_panel_tech="multi_junction",
+            panel_area_m2=80.5,
+            initial_efficiency=0.32,
+            mission_duration_years=15.0,
+            expected_degradation_pct=25.0
+        )
 
-    @root_validator
-    def validate_orbit_config(cls, values):
-        """Validate orbit configuration consistency"""
-        orbit_type = values.get('orbit_type')
-        altitude = values.get('altitude_km')
-        inclination = values.get('inclination_deg')
-        eccentricity = values.get('eccentricity', 0.0)
-
-        # Validate orbit-specific requirements
-        if orbit_type == OrbitType.GEO:
-            if altitude is not None and abs(altitude - 35786) > 100:
-                raise ValueError("GEO altitude should be approximately 35786 km")
-            if inclination is not None and abs(inclination) > 5:
-                raise ValueError("GEO inclination should be near 0 degrees")
-            eccentricity = 0.0  # GEO is circular
-
-        elif orbit_type == OrbitType.LEO:
-            if altitude is not None and (altitude < 200 or altitude > 2000):
-                raise ValueError("LEO altitude should be between 200-2000 km")
-
-        elif orbit_type == OrbitType.MEO:
-            if altitude is not None and (altitude < 2000 or altitude > 35786):
-                raise ValueError("MEO altitude should be between 2000-35786 km")
-
-        elif orbit_type == OrbitType.SSO:
-            if inclination is not None and abs(inclination - 98.0) > 5:
-                raise ValueError("SSO inclination should be approximately 98 degrees")
-
-        values['eccentricity'] = eccentricity
-        return values
-
-
-class SolarPanelConfig(BaseModel):
-    """Solar panel configuration"""
-    technology: SolarCellTechnology = Field(..., description="Solar cell technology")
-    area_m2: confloat_ge(0.1) = Field(..., description="Panel area in square meters")
-    initial_efficiency: confloat(ge=0.05, le=0.5) = Field(..., description="Initial efficiency")
-    degradation_coefficients: Dict[str, float] = Field(default_factory=dict, description="Custom degradation coefficients")
-    # Physical properties
-    thickness_mm: Optional[float] = Field(5.0, description="Panel thickness in mm")
-    mass_kg: Optional[float] = Field(None, description="Panel mass in kg")
-    # Electrical properties
-    operating_voltage_V: Optional[float] = Field(None, description="Operating voltage")
-    max_current_A: Optional[float] = Field(None, description="Maximum current")
-    # Thermal properties
-    absorptivity: Optional[float] = Field(0.92, description="Solar absorptivity")
-    emissivity: Optional[float] = Field(0.85, description="Thermal emissivity")
-
-    @validator('mass_kg')
-    def validate_mass(cls, v, values):
-        if v is None:
-            # Estimate mass from area (typical solar array areal density)
-            area = values.get('area_m2', 1.0)
-            return area * 15.0  # 15 kg/m² typical for space solar arrays
-        return v
-
-
-class MissionConfig(BaseModel):
-    """Mission configuration"""
-    duration_years: confloat_ge(0.1) = Field(..., description="Mission duration in years")
-    start_time: datetime = Field(default_factory=datetime.now, description="Mission start time")
-    time_step_hours: confloat(ge=0.01, le=168) = Field(1.0, description="Simulation time step")
-    # Analysis options
-    analysis_modes: List[str] = Field(default=["radiation", "thermal", "power"], description="Analysis modes to run")
-    fidelity: str = Field("high", description="Simulation fidelity (low/medium/high)")
-    # Output options
-    save_intermediate_results: bool = Field(True, description="Save intermediate results")
-    export_format: str = Field("excel", description="Default export format")
-
-
-class EnvironmentConfig(BaseModel):
-    """Environmental configuration"""
-    use_real_data: bool = Field(False, description="Use real space weather data")
-    radiation_model: RadiationModel = Field(RadiationModel.SIMPLIFIED, description="Radiation environment model")
-    thermal_model: ThermalModel = Field(ThermalModel.DETAILED, description="Thermal analysis model")
-    solar_activity: confloat(ge=0, le=1) = Field(0.5, description="Solar activity level (0-1)")
-    # Space weather
-    include_solar_proton_events: bool = Field(True, description="Include solar particle events")
-    include_galactic_cosmic_rays: bool = Field(True, description="Include galactic cosmic rays")
-    # Shielding
-    shielding_thickness_mm: float = Field(1.0, description="Radiation shielding thickness")
-    shielding_material: str = Field("aluminum", description="Shielding material")
-
-
-class SimulationConfig(BaseModel):
-    """Simulation configuration"""
-    orbit: OrbitConfig
-    solar_panel: SolarPanelConfig
-    mission: MissionConfig
-    environment: EnvironmentConfig
-    scenario_name: str = Field(..., description="Scenario name")
-    description: Optional[str] = Field(None, description="Scenario description")
-    version: str = Field("1.0", description="Configuration version")
-    created_at: datetime = Field(default_factory=datetime.now)
-    created_by: Optional[str] = Field(None, description="Configuration author")
-
-    class Config:
-        """Pydantic configuration"""
-        extra = "forbid"  # Forbid extra fields
-        schema_extra = {
-            "example": {
-                "scenario_name": "ISS_LEO_Mission",
-                "description": "ISS-like LEO satellite mission",
-                "orbit": {
-                    "orbit_type": "LEO",
-                    "altitude_km": 408,
-                    "inclination_deg": 51.64,
-                    "eccentricity": 0.0001
-                },
-                "solar_panel": {
-                    "technology": "silicon",
-                    "area_m2": 32.4,
-                    "initial_efficiency": 0.18
-                },
-                "mission": {
-                    "duration_years": 7.0,
-                    "time_step_hours": 1.0
-                },
-                "environment": {
-                    "radiation_model": "AE8/AP8",
-                    "solar_activity": 0.5
-                }
-            }
-        }
-
+    @staticmethod
+    def get_sso_scenario() -> SatelliteSpecs:
+        """Get Sun-synchronous orbit satellite scenario"""
+        return SatelliteSpecs(
+            name="Earth Observation Satellite",
+            description="Takes pictures of Earth for weather and mapping",
+            orbit_type="SSO",
+            altitude_km=785.0,
+            inclination_deg=98.6,
+            eccentricity=0.001,
+            period_minutes=100.7,
+            solar_panel_tech="silicon",
+            panel_area_m2=45.2,
+            initial_efficiency=0.22,
+            mission_duration_years=5.0,
+            expected_degradation_pct=15.0
+        )
 
 class ScenarioConfig:
-    """
-    Scenario configuration management system.
-
-    Features:
-    - JSON/YAML configuration loading and validation
-    - Pre-defined mission templates
-    - Configuration validation and error checking
-    - Template generation for different scenarios
-    - Configuration import/export
-    """
+    """Main scenario configuration management"""
 
     def __init__(self):
-        """Initialize scenario configuration manager"""
-        self.config: Optional[SimulationConfig] = None
-        self.templates = self._load_default_templates()
+        """Initialize scenario configuration"""
+        self.preset_scenarios = PresetScenarios()
+        self.custom_scenarios = {}
+        self._load_default_config()
 
-    def load_config(self, filepath: str) -> SimulationConfig:
-        """
-        Load configuration from file
+    def _load_default_config(self):
+        """Load default configuration settings"""
+        self.default_config = {
+            "simulation": {
+                "time_step_hours": 1.0,
+                "enable_thermal_analysis": True,
+                "enable_radiation_modeling": True,
+                "shielding_thickness_mm": 1.0
+            },
+            "output": {
+                "generate_plots": True,
+                "export_data": True,
+                "report_format": "pdf"
+            },
+            "advanced": {
+                "radiation_model": "AP8",
+                "thermal_model": "detailed",
+                "degradation_model": "combined"
+            }
+        }
 
-        Args:
-            filepath: Path to configuration file
+    def get_preset_scenarios(self) -> List[SatelliteSpecs]:
+        """Get list of all preset scenarios"""
+        return [
+            self.preset_scenarios.get_iss_scenario(),
+            self.preset_scenarios.get_geo_scenario(),
+            self.preset_scenarios.get_sso_scenario()
+        ]
 
-        Returns:
-            Validated simulation configuration
-        """
-        path = Path(filepath)
+    def get_scenario_by_name(self, name: str) -> Optional[SatelliteSpecs]:
+        """Get scenario by name"""
+        presets = self.get_preset_scenarios()
+        for scenario in presets:
+            if scenario.name == name:
+                return scenario
 
-        if not path.exists():
-            raise FileNotFoundError(f"Configuration file not found: {filepath}")
+        # Check custom scenarios
+        if name in self.custom_scenarios:
+            return self.custom_scenarios[name]
 
-        try:
-            with open(path, 'r') as f:
-                if path.suffix.lower() in ['.yaml', '.yml']:
-                    data = yaml.safe_load(f)
-                else:
-                    data = json.load(f)
+        return None
 
-            # Validate configuration
-            self.config = SimulationConfig(**data)
-            return self.config
+    def create_custom_scenario(self, scenario_data: Dict[str, Any]) -> SatelliteSpecs:
+        """Create custom scenario from user input"""
+        # Validate required fields
+        required_fields = ['name', 'description', 'altitude_km', 'mission_duration_years']
+        for field in required_fields:
+            if field not in scenario_data:
+                raise ValueError(f"Missing required field: {field}")
 
-        except Exception as e:
-            raise ValueError(f"Error loading configuration: {e}")
+        # Determine orbit type and calculate orbital parameters
+        altitude_km = scenario_data['altitude_km']
+        orbit_type = self._determine_orbit_type(altitude_km)
 
-    def save_config(self, config: SimulationConfig, filepath: str, format: str = "json"):
-        """
-        Save configuration to file
+        # Calculate orbital period (simplified Kepler's third law)
+        period_minutes = self._calculate_orbital_period(altitude_km)
 
-        Args:
-            config: Configuration to save
-            filepath: Output file path
-            format: Output format ("json" or "yaml")
-        """
-        path = Path(filepath)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # Set default values for missing fields
+        defaults = {
+            'orbit_type': orbit_type,
+            'inclination_deg': self._get_default_inclination(orbit_type),
+            'eccentricity': 0.001,  # Near-circular
+            'period_minutes': period_minutes,
+            'solar_panel_tech': 'silicon',
+            'panel_area_m2': 50.0,
+            'initial_efficiency': 0.20,
+            'expected_degradation_pct': self._estimate_degradation(orbit_type, scenario_data.get('mission_duration_years', 5))
+        }
 
-        data = config.dict()
+        # Fill in defaults for missing fields
+        for key, default_value in defaults.items():
+            if key not in scenario_data:
+                scenario_data[key] = default_value
 
-        try:
-            with open(path, 'w') as f:
-                if format.lower() in ['yaml', 'yml']:
-                    yaml.dump(data, f, default_flow_style=False, indent=2)
-                else:
-                    json.dump(data, f, indent=2, default=str)
+        # Create satellite specs object
+        scenario = SatelliteSpecs(**scenario_data)
 
-        except Exception as e:
-            raise ValueError(f"Error saving configuration: {e}")
+        # Store in custom scenarios
+        self.custom_scenarios[scenario.name] = scenario
 
-    def create_from_template(self, template_name: str, **kwargs) -> SimulationConfig:
-        """
-        Create configuration from predefined template
+        return scenario
 
-        Args:
-            template_name: Name of template
-            **kwargs: Parameters to override
+    def _determine_orbit_type(self, altitude_km: float) -> str:
+        """Determine orbit type from altitude"""
+        if altitude_km < 2000:
+            return "LEO"
+        elif altitude_km < 20000:
+            return "MEO"
+        elif 35000 <= altitude_km <= 36000:
+            return "GEO"
+        elif 600 <= altitude_km <= 800:
+            return "SSO"  # Common SSO altitude range
+        else:
+            return "Custom"
 
-        Returns:
-            Configured simulation scenario
-        """
-        if template_name not in self.templates:
-            raise ValueError(f"Template not found: {template_name}")
+    def _calculate_orbital_period(self, altitude_km: float) -> float:
+        """Calculate orbital period using Kepler's third law (simplified)"""
+        earth_radius_km = 6371.0
+        semi_major_axis = earth_radius_km + altitude_km
 
-        template_data = self.templates[template_name].copy()
+        # Kepler's third law: T² = (4π²/GM) × a³
+        # Simplified for Earth orbit: T (minutes) ≈ 2π × sqrt(a³/398600.4418) / 60
+        GM = 398600.4418  # Earth's gravitational parameter (km³/s²)
 
-        # Apply overrides
-        self._deep_update(template_data, kwargs)
+        period_seconds = 2 * np.pi * np.sqrt(semi_major_axis**3 / GM)
+        period_minutes = period_seconds / 60
 
-        # Validate and return configuration
-        return SimulationConfig(**template_data)
+        return period_minutes
 
-    def validate_config(self, config_data: Dict) -> SimulationConfig:
-        """
-        Validate configuration data
+    def _get_default_inclination(self, orbit_type: str) -> float:
+        """Get default inclination for orbit type"""
+        inclination_map = {
+            "LEO": 51.6,    # ISS inclination
+            "MEO": 55.0,    # GPS-like
+            "GEO": 0.0,     # Geostationary
+            "SSO": 98.0,    # Sun-synchronous
+            "Custom": 45.0  # Arbitrary default
+        }
+        return inclination_map.get(orbit_type, 45.0)
 
-        Args:
-            config_data: Configuration data dictionary
+    def _estimate_degradation(self, orbit_type: str, duration_years: float) -> float:
+        """Estimate degradation percentage based on orbit and duration"""
+        # Base degradation rates per year by orbit type
+        degradation_rates = {
+            "LEO": 3.0,    # Higher due to more radiation belt passes
+            "MEO": 2.0,    # Moderate radiation
+            "GEO": 1.5,    # Lower radiation but longer exposure
+            "SSO": 2.5,    # Moderate with some radiation belt exposure
+            "Custom": 2.0  # Average
+        }
 
-        Returns:
-            Validated configuration
-        """
-        return SimulationConfig(**config_data)
+        annual_rate = degradation_rates.get(orbit_type, 2.0)
+        total_degradation = annual_rate * duration_years
 
-    def get_config_schema(self) -> Dict:
-        """
-        Get configuration schema
+        return min(total_degradation, 50.0)  # Cap at 50%
 
-        Returns:
-            JSON schema for configuration
-        """
-        return SimulationConfig.schema()
+    def save_scenario(self, scenario: SatelliteSpecs, filename: str):
+        """Save scenario to JSON file"""
+        scenario_dict = asdict(scenario)
+        with open(filename, 'w') as f:
+            json.dump(scenario_dict, f, indent=2)
 
-    def list_templates(self) -> List[str]:
-        """
-        List available templates
+    def load_scenario(self, filename: str) -> SatelliteSpecs:
+        """Load scenario from JSON file"""
+        with open(filename, 'r') as f:
+            scenario_dict = json.load(f)
+        return SatelliteSpecs(**scenario_dict)
 
-        Returns:
-            List of template names
-        """
-        return list(self.templates.keys())
-
-    def _load_default_templates(self) -> Dict[str, Dict]:
-        """Load default mission templates"""
+    def get_scenario_summary(self, scenario: SatelliteSpecs) -> Dict[str, str]:
+        """Get user-friendly summary of scenario"""
         return {
-            "ISS_Like": {
-                "scenario_name": "ISS_Like_Mission",
-                "description": "International Space Station-like LEO mission",
-                "orbit": {
-                    "orbit_type": "LEO",
-                    "altitude_km": 408,
-                    "inclination_deg": 51.64,
-                    "eccentricity": 0.0001
-                },
-                "solar_panel": {
-                    "technology": "silicon",
-                    "area_m2": 32.4,
-                    "initial_efficiency": 0.18
-                },
-                "mission": {
-                    "duration_years": 7.0,
-                    "time_step_hours": 1.0
-                },
-                "environment": {
-                    "radiation_model": "AE8/AP8",
-                    "solar_activity": 0.5,
-                    "use_real_data": False
-                }
-            },
-
-            "GEO_Communication": {
-                "scenario_name": "GEO_Communication_Satellite",
-                "description": "Geostationary communication satellite",
-                "orbit": {
-                    "orbit_type": "GEO",
-                    "altitude_km": 35786,
-                    "inclination_deg": 0.0,
-                    "eccentricity": 0.0
-                },
-                "solar_panel": {
-                    "technology": "multi_junction_gaas",
-                    "area_m2": 80.5,
-                    "initial_efficiency": 0.32
-                },
-                "mission": {
-                    "duration_years": 15.0,
-                    "time_step_hours": 24.0
-                },
-                "environment": {
-                    "radiation_model": "AP9/AT9",
-                    "solar_activity": 0.7,
-                    "use_real_data": True
-                }
-            },
-
-            "SSO_Earth_Observation": {
-                "scenario_name": "SSO_Earth_Observation",
-                "description": "Sun-synchronous Earth observation satellite",
-                "orbit": {
-                    "orbit_type": "SSO",
-                    "altitude_km": 785,
-                    "inclination_deg": 98.6,
-                    "eccentricity": 0.001
-                },
-                "solar_panel": {
-                    "technology": "silicon",
-                    "area_m2": 45.2,
-                    "initial_efficiency": 0.22
-                },
-                "mission": {
-                    "duration_years": 5.0,
-                    "time_step_hours": 0.5
-                },
-                "environment": {
-                    "radiation_model": "AE8/AP8",
-                    "solar_activity": 0.3,
-                    "use_real_data": False
-                }
-            },
-
-            "High_Radiation_MEO": {
-                "scenario_name": "High_Radiation_MEO_Satellite",
-                "description": "Medium Earth Orbit satellite in high radiation environment",
-                "orbit": {
-                    "orbit_type": "MEO",
-                    "altitude_km": 20000,
-                    "inclination_deg": 55.0,
-                    "eccentricity": 0.1
-                },
-                "solar_panel": {
-                    "technology": "multi_junction_inGaP",
-                    "area_m2": 25.0,
-                    "initial_efficiency": 0.30
-                },
-                "mission": {
-                    "duration_years": 10.0,
-                    "time_step_hours": 6.0
-                },
-                "environment": {
-                    "radiation_model": "AP9/AT9",
-                    "solar_activity": 0.8,
-                    "use_real_data": True
-                }
-            },
-
-            "CubeSat_Lite": {
-                "scenario_name": "CubeSat_Lite",
-                "description": "Small CubeSat mission",
-                "orbit": {
-                    "orbit_type": "LEO",
-                    "altitude_km": 500,
-                    "inclination_deg": 45.0,
-                    "eccentricity": 0.001
-                },
-                "solar_panel": {
-                    "technology": "silicon",
-                    "area_m2": 0.1,
-                    "initial_efficiency": 0.20
-                },
-                "mission": {
-                    "duration_years": 2.0,
-                    "time_step_hours": 0.25
-                },
-                "environment": {
-                    "radiation_model": "SIMPLIFIED",
-                    "solar_activity": 0.5,
-                    "use_real_data": False
-                }
-            }
+            "Name": scenario.name,
+            "Description": scenario.description,
+            "Orbit": f"{scenario.orbit_type} at {scenario.altitude_km:.0f} km",
+            "Mission": f"{scenario.mission_duration_years:.1f} years",
+            "Solar Panels": f"{scenario.solar_panel_tech.replace('_', ' ').title()}, {scenario.panel_area_m2:.1f} m²",
+            "Initial Efficiency": f"{scenario.initial_efficiency*100:.1f}%",
+            "Expected Degradation": f"{scenario.expected_degradation_pct:.1f}% over mission"
         }
 
-    def _deep_update(self, base_dict: Dict, update_dict: Dict):
-        """Deep update dictionary"""
-        for key, value in update_dict.items():
-            if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
-                self._deep_update(base_dict[key], value)
-            else:
-                base_dict[key] = value
-
-    def generate_config_summary(self, config: SimulationConfig) -> Dict:
-        """
-        Generate configuration summary
-
-        Args:
-            config: Simulation configuration
-
-        Returns:
-            Configuration summary dictionary
-        """
-        return {
-            'scenario_name': config.scenario_name,
-            'description': config.description,
-            'mission_duration_years': config.mission.duration_years,
-            'orbit_type': config.orbit.orbit_type.value,
-            'orbital_parameters': {
-                'altitude_km': config.orbit.altitude_km,
-                'inclination_deg': config.orbit.inclination_deg,
-                'eccentricity': config.orbit.eccentricity
-            },
-            'solar_panel': {
-                'technology': config.solar_panel.technology.value,
-                'area_m2': config.solar_panel.area_m2,
-                'initial_efficiency': config.solar_panel.initial_efficiency
-            },
-            'environment': {
-                'radiation_model': config.environment.radiation_model.value,
-                'solar_activity': config.environment.solar_activity,
-                'use_real_data': config.environment.use_real_data
-            },
-            'simulation_settings': {
-                'time_step_hours': config.mission.time_step_hours,
-                'fidelity': config.mission.fidelity,
-                'analysis_modes': config.mission.analysis_modes
-            }
-        }
-
-    def compare_configs(self, config1: SimulationConfig, config2: SimulationConfig) -> Dict:
-        """
-        Compare two configurations
-
-        Args:
-            config1: First configuration
-            config2: Second configuration
-
-        Returns:
-            Comparison results
-        """
-        differences = {}
-
-        # Compare basic parameters
-        if config1.orbit.orbit_type != config2.orbit.orbit_type:
-            differences['orbit_type'] = {
-                'config1': config1.orbit.orbit_type.value,
-                'config2': config2.orbit.orbit_type.value
-            }
-
-        if config1.orbit.altitude_km != config2.orbit.altitude_km:
-            differences['altitude_km'] = {
-                'config1': config1.orbit.altitude_km,
-                'config2': config2.orbit.altitude_km
-            }
-
-        if config1.solar_panel.technology != config2.solar_panel.technology:
-            differences['solar_cell_technology'] = {
-                'config1': config1.solar_panel.technology.value,
-                'config2': config2.solar_panel.technology.value
-            }
-
-        if config1.solar_panel.area_m2 != config2.solar_panel.area_m2:
-            differences['panel_area'] = {
-                'config1': config1.solar_panel.area_m2,
-                'config2': config2.solar_panel.area_m2
-            }
-
-        if config1.mission.duration_years != config2.mission.duration_years:
-            differences['mission_duration'] = {
-                'config1': config1.mission.duration_years,
-                'config2': config2.mission.duration_years
-            }
-
-        return differences
-
-    def export_config_template(self, filepath: str, include_examples: bool = True):
-        """
-        Export configuration template with documentation
-
-        Args:
-            filepath: Output file path
-            include_examples: Include example values
-        """
-        schema = self.get_config_schema()
-
-        template_data = {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "title": "Solar Panel Degradation Analysis Configuration",
-            "description": "Configuration schema for solar panel degradation simulation",
-            "type": "object",
-            "properties": schema.get("properties", {}),
-            "required": schema.get("required", [])
-        }
-
-        if include_examples:
-            template_data["examples"] = [
-                self.templates["ISS_Like"],
-                self.templates["GEO_Communication"]
-            ]
-
-        with open(filepath, 'w') as f:
-            json.dump(template_data, f, indent=2)
-
-    def validate_mission_feasibility(self, config: SimulationConfig) -> Dict:
-        """
-        Validate mission feasibility and provide recommendations
-
-        Args:
-            config: Simulation configuration
-
-        Returns:
-            Feasibility analysis and recommendations
-        """
-        issues = []
+    def validate_scenario(self, scenario: SatelliteSpecs) -> List[str]:
+        """Validate scenario parameters and return list of warnings"""
         warnings = []
-        recommendations = []
 
-        # Check orbit validity
-        if config.orbit.orbit_type == OrbitType.LEO:
-            if config.orbit.altitude_km < 300:
-                warnings.append("Low altitude may result in rapid orbital decay")
-                recommendations.append("Consider orbital altitude > 300 km for extended missions")
+        # Altitude validation
+        if scenario.altitude_km < 200:
+            warnings.append("Very low altitude - atmospheric drag may be significant")
+        elif scenario.altitude_km > 50000:
+            warnings.append("Very high altitude - may exceed practical satellite range")
 
-            if config.environment.radiation_model == RadiationModel.SIMPLIFIED:
-                warnings.append("Simplified radiation model may not capture South Atlantic Anomaly effects")
-                recommendations.append("Use AE8/AP8 or AP9 model for accurate LEO radiation assessment")
+        # Inclination validation
+        if scenario.orbit_type == "SSO" and abs(scenario.inclination_deg - 98.0) > 2.0:
+            warnings.append("SSO typically requires ~98° inclination for sun-synchronism")
 
-        # Check solar panel sizing
-        expected_degradation = 0.15 * config.mission.duration_years  # Rough estimate
-        if config.solar_panel.initial_efficiency * (1 - expected_degradation) < 0.1:
-            warnings.append("End-of-life efficiency may be below 10%")
-            recommendations.append("Consider larger panel area or higher efficiency cells")
+        # Eccentricity validation
+        if scenario.eccentricity > 0.1:
+            warnings.append("High eccentricity - power output will vary significantly")
 
-        # Check mission duration
-        if config.mission.duration_years > 20:
-            warnings.append("Very long mission duration increases uncertainty")
-            recommendations.append("Consider conservative degradation estimates")
+        # Mission duration validation
+        if scenario.mission_duration_years > 20:
+            warnings.append("Very long mission duration - degradation estimates become uncertain")
 
-        # Check analysis modes
-        if "thermal" not in config.mission.analysis_modes:
-            warnings.append("Thermal analysis not included - missing important degradation mechanism")
-            recommendations.append("Include thermal analysis for comprehensive assessment")
+        # Solar panel validation
+        if scenario.panel_area_m2 > 200:
+            warnings.append("Large solar panel area - may affect spacecraft dynamics")
 
+        if scenario.initial_efficiency > 0.35:
+            warnings.append("High efficiency - requires advanced multi-junction cells")
+
+        return warnings
+
+    def get_user_friendly_parameters(self) -> Dict[str, Dict]:
+        """Get user-friendly parameter descriptions for interface"""
         return {
-            "feasible": len(issues) == 0,
-            "issues": issues,
-            "warnings": warnings,
-            "recommendations": recommendations,
-            "estimated_eol_efficiency": config.solar_panel.initial_efficiency * (1 - expected_degradation)
+            "altitude_km": {
+                "label": "Orbit Altitude",
+                "description": "Height above Earth's surface",
+                "unit": "km",
+                "min": 200,
+                "max": 50000,
+                "default": 500,
+                "options": [
+                    {"label": "Low Earth Orbit (LEO)", "value": 500},
+                    {"label": "Medium Earth Orbit (MEO)", "value": 20000},
+                    {"label": "Geostationary (GEO)", "value": 35786}
+                ]
+            },
+            "mission_duration_years": {
+                "label": "Mission Duration",
+                "description": "How long the satellite needs to operate",
+                "unit": "years",
+                "min": 1,
+                "max": 20,
+                "default": 5,
+                "options": [
+                    {"label": "Short (1-3 years)", "value": 2},
+                    {"label": "Medium (5-7 years)", "value": 5},
+                    {"label": "Long (10+ years)", "value": 15}
+                ]
+            },
+            "panel_area_m2": {
+                "label": "Solar Panel Size",
+                "description": "Total area of solar panels",
+                "unit": "m²",
+                "min": 10,
+                "max": 200,
+                "default": 50,
+                "options": [
+                    {"label": "Small (10-30 m²)", "value": 20},
+                    {"label": "Medium (30-80 m²)", "value": 50},
+                    {"label": "Large (80+ m²)", "value": 100}
+                ]
+            },
+            "solar_panel_tech": {
+                "label": "Solar Cell Technology",
+                "description": "Type of solar cells to use",
+                "unit": "",
+                "options": [
+                    {"label": "Silicon (Standard)", "value": "silicon"},
+                    {"label": "Multi-Junction (High Efficiency)", "value": "multi_junction"}
+                ]
+            }
         }
+
+# Add numpy import for calculations
+import numpy as np
