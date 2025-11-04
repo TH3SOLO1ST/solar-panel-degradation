@@ -1,0 +1,48 @@
+{
+  "scenario_name": "SSO_Earth_Observation",
+  "description": "Sun-synchronous Earth observation satellite with consistent solar illumination and moderate radiation",
+  "version": "1.0",
+  "orbit": {
+    "orbit_type": "SSO",
+    "altitude_km": 785,
+    "inclination_deg": 98.6,
+    "eccentricity": 0.001,
+    "period_minutes": 100.7,
+    "local_time_descending": "10:30 AM"
+  },
+  "solar_panel": {
+    "technology": "silicon",
+    "area_m2": 45.2,
+    "initial_efficiency": 0.22,
+    "degradation_coefficients": {
+      "radiation_A": 0.08,
+      "radiation_B": 10000000000,
+      "thermal_coefficient": -0.0004
+    },
+    "thickness_mm": 4.0,
+    "mass_kg": 678.0,
+    "absorptivity": 0.91,
+    "emissivity": 0.86
+  },
+  "mission": {
+    "duration_years": 5.0,
+    "start_time": "2024-01-01T00:00:00",
+    "time_step_hours": 0.5,
+    "analysis_modes": ["radiation", "thermal", "power", "eclipse"],
+    "fidelity": "high",
+    "save_intermediate_results": true,
+    "export_format": "excel"
+  },
+  "environment": {
+    "use_real_data": false,
+    "radiation_model": "AE8/AP8",
+    "thermal_model": "detailed",
+    "solar_activity": 0.3,
+    "include_solar_proton_events": true,
+    "include_galactic_cosmic_rays": true,
+    "shielding_thickness_mm": 1.5,
+    "shielding_material": "aluminum"
+  },
+  "created_at": "2024-01-01T00:00:00",
+  "created_by": "Solar Panel Degradation Model"
+}

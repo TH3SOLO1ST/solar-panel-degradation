@@ -1,0 +1,49 @@
+{
+  "scenario_name": "GEO_Communication_Satellite",
+  "description": "Geostationary communication satellite with long mission duration and high radiation exposure",
+  "version": "1.0",
+  "orbit": {
+    "orbit_type": "GEO",
+    "altitude_km": 35786,
+    "inclination_deg": 0.0,
+    "eccentricity": 0.0,
+    "period_hours": 24.0
+  },
+  "solar_panel": {
+    "technology": "multi_junction_gaas",
+    "area_m2": 80.5,
+    "initial_efficiency": 0.32,
+    "degradation_coefficients": {
+      "radiation_A_top": 0.12,
+      "radiation_B_top": 5000000000,
+      "radiation_A_middle": 0.10,
+      "radiation_B_middle": 8000000000,
+      "thermal_coefficient": -0.0003
+    },
+    "thickness_mm": 3.0,
+    "mass_kg": 1207.5,
+    "absorptivity": 0.90,
+    "emissivity": 0.88
+  },
+  "mission": {
+    "duration_years": 15.0,
+    "start_time": "2024-01-01T00:00:00",
+    "time_step_hours": 24.0,
+    "analysis_modes": ["radiation", "thermal", "power", "eclipse"],
+    "fidelity": "high",
+    "save_intermediate_results": true,
+    "export_format": "excel"
+  },
+  "environment": {
+    "use_real_data": true,
+    "radiation_model": "AP9/AT9",
+    "thermal_model": "detailed",
+    "solar_activity": 0.7,
+    "include_solar_proton_events": true,
+    "include_galactic_cosmic_rays": true,
+    "shielding_thickness_mm": 2.0,
+    "shielding_material": "aluminum"
+  },
+  "created_at": "2024-01-01T00:00:00",
+  "created_by": "Solar Panel Degradation Model"
+}

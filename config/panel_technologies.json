@@ -1,0 +1,198 @@
+{
+  "solar_cell_technologies": {
+    "silicon": {
+      "name": "Silicon Solar Cells",
+      "description": "Traditional crystalline silicon solar cells",
+      "typical_efficiency": 0.18,
+      "efficiency_range": [0.15, 0.22],
+      "radiation_sensitivity": "moderate",
+      "temperature_coefficient": -0.0004,
+      "cost_per_watt": "low",
+      "advantages": [
+        "Well-established technology",
+        "Low cost",
+        "Good reliability"
+      ],
+      "disadvantages": [
+        "Moderate efficiency",
+        "Radiation damage sensitivity",
+        "Temperature performance"
+      ],
+      "degradation_coefficients": {
+        "radiation_A": 0.08,
+        "radiation_B": 10000000000,
+        "thermal_coefficient": -0.0004
+      }
+    },
+    "multi_junction_gaas": {
+      "name": "Multi-Junction GaAs Solar Cells",
+      "description": "Gallium Arsenide-based multi-junction solar cells",
+      "typical_efficiency": 0.30,
+      "efficiency_range": [0.28, 0.34],
+      "radiation_sensitivity": "low",
+      "temperature_coefficient": -0.0003,
+      "cost_per_watt": "high",
+      "advantages": [
+        "High efficiency",
+        "Good radiation resistance",
+        "High temperature performance"
+      ],
+      "disadvantages": [
+        "High cost",
+        "Complex manufacturing",
+        "Heavy substrates"
+      ],
+      "degradation_coefficients": {
+        "radiation_A_top": 0.12,
+        "radiation_B_top": 5000000000,
+        "radiation_A_middle": 0.10,
+        "radiation_B_middle": 8000000000,
+        "thermal_coefficient": -0.0003
+      }
+    },
+    "multi_junction_inGaP": {
+      "name": "Multi-Junction InGaP/GaAs/Ge Solar Cells",
+      "description": "Indium Gallium Phosphide top cell with GaAs middle and Germanium bottom cell",
+      "typical_efficiency": 0.32,
+      "efficiency_range": [0.30, 0.36],
+      "radiation_sensitivity": "low",
+      "temperature_coefficient": -0.00025,
+      "cost_per_watt": "very_high",
+      "advantages": [
+        "Highest available efficiency",
+        "Excellent radiation resistance",
+        "Wide spectral response"
+      ],
+      "disadvantages": [
+        "Very high cost",
+        "Very complex manufacturing",
+        "Heaviest option"
+      ],
+      "degradation_coefficients": {
+        "radiation_A_top": 0.12,
+        "radiation_B_top": 5000000000,
+        "radiation_A_middle": 0.10,
+        "radiation_B_middle": 8000000000,
+        "radiation_A_bottom": 0.06,
+        "radiation_B_bottom": 10000000000,
+        "thermal_coefficient": -0.00025
+      }
+    },
+    "thin_film": {
+      "name": "Thin-Film Solar Cells",
+      "description": "Amorphous silicon or CIGS thin-film solar cells",
+      "typical_efficiency": 0.10,
+      "efficiency_range": [0.08, 0.14],
+      "radiation_sensitivity": "high",
+      "temperature_coefficient": -0.0002,
+      "cost_per_watt": "moderate",
+      "advantages": [
+        "Lightweight",
+        "Flexible",
+        "Low temperature coefficient"
+      ],
+      "disadvantages": [
+        "Low efficiency",
+        "High radiation sensitivity",
+        "Degradation issues"
+      ],
+      "degradation_coefficients": {
+        "radiation_A": 0.15,
+        "radiation_B": 5000000000,
+        "thermal_coefficient": -0.0002
+      }
+    },
+    "perovskite": {
+      "name": "Perovskite Solar Cells",
+      "description": "Emerging perovskite solar cell technology",
+      "typical_efficiency": 0.25,
+      "efficiency_range": [0.20, 0.28],
+      "radiation_sensitivity": "unknown",
+      "temperature_coefficient": -0.00035,
+      "cost_per_watt": "moderate",
+      "advantages": [
+        "High efficiency potential",
+        "Low cost potential",
+        "Simple processing"
+      ],
+      "disadvantages": [
+        "Not space-qualified",
+        "Stability issues",
+        "Limited flight heritage"
+      ],
+      "degradation_coefficients": {
+        "radiation_A": 0.10,
+        "radiation_B": 7500000000,
+        "thermal_coefficient": -0.00035
+      }
+    }
+  },
+  "shielding_materials": {
+    "aluminum": {
+      "name": "Aluminum",
+      "density_g_cm3": 2.7,
+      "radiation_attenuation": "moderate",
+      "thermal_conductivity": 237,
+      "cost_per_kg": "low",
+      "space_heritage": "excellent"
+    },
+    "titanium": {
+      "name": "Titanium",
+      "density_g_cm3": 4.5,
+      "radiation_attenuation": "good",
+      "thermal_conductivity": 22,
+      "cost_per_kg": "high",
+      "space_heritage": "excellent"
+    },
+    "polyethylene": {
+      "name": "Polyethylene",
+      "density_g_cm3": 0.95,
+      "radiation_attenuation": "excellent",
+      "thermal_conductivity": 0.5,
+      "cost_per_kg": "moderate",
+      "space_heritage": "good"
+    },
+    "tungsten": {
+      "name": "Tungsten",
+      "density_g_cm3": 19.3,
+      "radiation_attenuation": "excellent",
+      "thermal_conductivity": 173,
+      "cost_per_kg": "very_high",
+      "space_heritage": "limited"
+    }
+  },
+  "mission_profiles": {
+    "leo_imaging": {
+      "name": "LEO Earth Imaging",
+      "typical_altitude_km": [400, 800],
+      "typical_inclination_deg": [0, 98],
+      "radiation_environment": "moderate",
+      "thermal_cycling": "frequent",
+      "eclipse_fraction": 0.35
+    },
+    "geo_communications": {
+      "name": "GEO Communications",
+      "typical_altitude_km": [35786, 35786],
+      "typical_inclination_deg": [0, 5],
+      "radiation_environment": "high",
+      "thermal_cycling": "daily",
+      "eclipse_fraction": 0.05
+    },
+    "sso_observation": {
+      "name": "SSO Earth Observation",
+      "typical_altitude_km": [600, 800],
+      "typical_inclination_deg": [96, 99],
+      "radiation_environment": "moderate",
+      "thermal_cycling": "frequent",
+      "eclipse_fraction": 0.30
+    },
+    "deep_space": {
+      "name": "Deep Space Mission",
+      "typical_altitude_km": [100000, null],
+      "typical_inclination_deg": [0, 180],
+      "radiation_environment": "very_high",
+      "thermal_cycling": "minimal",
+      "eclipse_fraction": 0.10
+    }
+  }
+}
