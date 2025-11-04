@@ -159,7 +159,7 @@ solar-panel-api
 
 ```bash
 # Clone repository
-git clone https://github.com/ezra-compyle/solar-panel-degradation.git
+git clone https://github.com/TH3SOLO1ST/solar-panel-degradation.git
 cd solar-panel-degradation
 
 # Create virtual environment
@@ -310,7 +310,7 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
 # Clone repository
-git clone https://github.com/ezra-compyle/solar-panel-degradation.git
+git clone https://github.com/TH3SOLO1ST/solar-panel-degradation.git
 cd solar-panel-degradation
 
 # Install development dependencies
@@ -331,10 +331,9 @@ This project is licensed under MIT License - see [LICENSE](LICENSE) file for det
 
 ## 🆘 Support
 
-- **Documentation**: [Full documentation](https://solarpaneldegradation.readthedocs.io/)
-- **Issues**: [GitHub Issues](https://github.com/ezra-compyle/solar-panel-degradation/issues)
-- **Email**: contact@solarpanelmodel.com
-- **Community**: [Discussions Forum](https://github.com/ezra-compyle/solar-panel-degradation/discussions)
+- **Issues**: [GitHub Issues](https://github.com/TH3SOLO1ST/solar-panel-degradation/issues)
+- **Email**: (excel3227@gmail.com)
+- **Community**: [Discussions Forum](https://github.com/TH3SOLO1ST/solar-panel-degradation/discussions)
 
 ## 🙏 Acknowledgments
 
