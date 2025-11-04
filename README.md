@@ -305,7 +305,7 @@ If you use this tool in research, please cite:
 ```
 Solar Panel Degradation Model (Version 1.0)
 Python implementation of multi-physics solar panel degradation analysis
-Available at: github.com/TH3SOLO1ST/solar-panel-degradation
+Available at: https://github.com/TH3SOLO1ST/solar-panel-degradation
 ```
 
 ## Support
