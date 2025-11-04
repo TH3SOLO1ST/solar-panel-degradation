@@ -2,161 +2,197 @@
   "solar_cell_technologies": {
     "silicon": {
       "name": "Silicon Solar Cells",
-      "description": "Traditional silicon solar cells with proven space heritage",
-      "initial_efficiency_range": [0.15, 0.22],
+      "description": "Traditional crystalline silicon solar cells",
       "typical_efficiency": 0.18,
+      "efficiency_range": [0.15, 0.22],
+      "radiation_sensitivity": "moderate",
+      "temperature_coefficient": -0.0004,
+      "cost_per_watt": "low",
       "advantages": [
-        "Lower cost",
         "Well-established technology",
-        "Good radiation resistance",
-        "Temperature stable"
+        "Low cost",
+        "Good reliability"
       ],
       "disadvantages": [
-        "Lower efficiency than multi-junction",
-        "Heavier for same power output"
+        "Moderate efficiency",
+        "Radiation damage sensitivity",
+        "Temperature performance"
       ],
-      "degradation_parameters": {
-        "radiation_coeff_A": 0.08,
-        "radiation_coeff_B": 1e10,
-        "temperature_coefficient": -0.0004,
-        "annealing_factor": 0.1
-      },
-      "typical_applications": [
-        "Low Earth Orbit satellites",
-        "CubeSats",
-        "Educational satellites",
-        "Technology demonstrators"
-      ]
+      "degradation_coefficients": {
+        "radiation_A": 0.08,
+        "radiation_B": 10000000000,
+        "thermal_coefficient": -0.0004
+      }
     },
-    "multi_junction": {
-      "name": "Multi-Junction Solar Cells",
-      "description": "High-efficiency gallium arsenide based multi-junction cells",
-      "initial_efficiency_range": [0.28, 0.35],
-      "typical_efficiency": 0.32,
+    "multi_junction_gaas": {
+      "name": "Multi-Junction GaAs Solar Cells",
+      "description": "Gallium Arsenide-based multi-junction solar cells",
+      "typical_efficiency": 0.30,
+      "efficiency_range": [0.28, 0.34],
+      "radiation_sensitivity": "low",
+      "temperature_coefficient": -0.0003,
+      "cost_per_watt": "high",
       "advantages": [
-        "Highest efficiency available",
-        "Better radiation resistance",
-        "Lower temperature coefficient",
-        "Proven in GEO applications"
+        "High efficiency",
+        "Good radiation resistance",
+        "High temperature performance"
       ],
       "disadvantages": [
-        "Higher cost",
-        "More complex manufacturing",
-        "Sensitive to contamination"
+        "High cost",
+        "Complex manufacturing",
+        "Heavy substrates"
       ],
-      "degradation_parameters": {
-        "subcells": {
-          "top": {
-            "material": "GaInP",
-            "bandgap_ev": 1.85,
-            "radiation_coeff_A": 0.12,
-            "radiation_coeff_B": 5e9
-          },
-          "middle": {
-            "material": "GaAs",
-            "bandgap_ev": 1.42,
-            "radiation_coeff_A": 0.10,
-            "radiation_coeff_B": 8e9
-          },
-          "bottom": {
-            "material": "Ge",
-            "bandgap_ev": 0.66,
-            "radiation_coeff_A": 0.06,
-            "radiation_coeff_B": 1e10
-          }
-        },
-        "temperature_coefficient": -0.0003
-      },
-      "typical_applications": [
-        "Geostationary communications satellites",
-        "High-power spacecraft",
-        "Deep space missions",
-        "Military satellites"
-      ]
+      "degradation_coefficients": {
+        "radiation_A_top": 0.12,
+        "radiation_B_top": 5000000000,
+        "radiation_A_middle": 0.10,
+        "radiation_B_middle": 8000000000,
+        "thermal_coefficient": -0.0003
+      }
+    },
+    "multi_junction_inGaP": {
+      "name": "Multi-Junction InGaP/GaAs/Ge Solar Cells",
+      "description": "Indium Gallium Phosphide top cell with GaAs middle and Germanium bottom cell",
+      "typical_efficiency": 0.32,
+      "efficiency_range": [0.30, 0.36],
+      "radiation_sensitivity": "low",
+      "temperature_coefficient": -0.00025,
+      "cost_per_watt": "very_high",
+      "advantages": [
+        "Highest available efficiency",
+        "Excellent radiation resistance",
+        "Wide spectral response"
+      ],
+      "disadvantages": [
+        "Very high cost",
+        "Very complex manufacturing",
+        "Heaviest option"
+      ],
+      "degradation_coefficients": {
+        "radiation_A_top": 0.12,
+        "radiation_B_top": 5000000000,
+        "radiation_A_middle": 0.10,
+        "radiation_B_middle": 8000000000,
+        "radiation_A_bottom": 0.06,
+        "radiation_B_bottom": 10000000000,
+        "thermal_coefficient": -0.00025
+      }
+    },
+    "thin_film": {
+      "name": "Thin-Film Solar Cells",
+      "description": "Amorphous silicon or CIGS thin-film solar cells",
+      "typical_efficiency": 0.10,
+      "efficiency_range": [0.08, 0.14],
+      "radiation_sensitivity": "high",
+      "temperature_coefficient": -0.0002,
+      "cost_per_watt": "moderate",
+      "advantages": [
+        "Lightweight",
+        "Flexible",
+        "Low temperature coefficient"
+      ],
+      "disadvantages": [
+        "Low efficiency",
+        "High radiation sensitivity",
+        "Degradation issues"
+      ],
+      "degradation_coefficients": {
+        "radiation_A": 0.15,
+        "radiation_B": 5000000000,
+        "thermal_coefficient": -0.0002
+      }
+    },
+    "perovskite": {
+      "name": "Perovskite Solar Cells",
+      "description": "Emerging perovskite solar cell technology",
+      "typical_efficiency": 0.25,
+      "efficiency_range": [0.20, 0.28],
+      "radiation_sensitivity": "unknown",
+      "temperature_coefficient": -0.00035,
+      "cost_per_watt": "moderate",
+      "advantages": [
+        "High efficiency potential",
+        "Low cost potential",
+        "Simple processing"
+      ],
+      "disadvantages": [
+        "Not space-qualified",
+        "Stability issues",
+        "Limited flight heritage"
+      ],
+      "degradation_coefficients": {
+        "radiation_A": 0.10,
+        "radiation_B": 7500000000,
+        "thermal_coefficient": -0.00035
+      }
     }
   },
-  "panel_configurations": {
-    "small": {
-      "area_m2": 20.0,
-      "power_kw": 3.6,
-      "mass_kg": 40.0,
-      "description": "Small satellite configuration"
+  "shielding_materials": {
+    "aluminum": {
+      "name": "Aluminum",
+      "density_g_cm3": 2.7,
+      "radiation_attenuation": "moderate",
+      "thermal_conductivity": 237,
+      "cost_per_kg": "low",
+      "space_heritage": "excellent"
     },
-    "medium": {
-      "area_m2": 50.0,
-      "power_kw": 9.0,
-      "mass_kg": 100.0,
-      "description": "Medium satellite configuration"
+    "titanium": {
+      "name": "Titanium",
+      "density_g_cm3": 4.5,
+      "radiation_attenuation": "good",
+      "thermal_conductivity": 22,
+      "cost_per_kg": "high",
+      "space_heritage": "excellent"
     },
-    "large": {
-      "area_m2": 100.0,
-      "power_kw": 18.0,
-      "mass_kg": 200.0,
-      "description": "Large satellite configuration"
+    "polyethylene": {
+      "name": "Polyethylene",
+      "density_g_cm3": 0.95,
+      "radiation_attenuation": "excellent",
+      "thermal_conductivity": 0.5,
+      "cost_per_kg": "moderate",
+      "space_heritage": "good"
+    },
+    "tungsten": {
+      "name": "Tungsten",
+      "density_g_cm3": 19.3,
+      "radiation_attenuation": "excellent",
+      "thermal_conductivity": 173,
+      "cost_per_kg": "very_high",
+      "space_heritage": "limited"
     }
   },
-  "degradation_mechanisms": {
-    "radiation_damage": {
-      "name": "Radiation Damage",
-      "description": "Damage from high-energy particles in space radiation environment",
-      "primary_causes": [
-        "Van Allen radiation belts (trapped particles)",
-        "Solar particle events (solar flares)",
-        "Galactic cosmic rays"
-      ],
-      "effects": [
-        "Displacement damage in crystal lattice",
-        "Reduced minority carrier lifetime",
-        "Increased series resistance",
-        "Lower conversion efficiency"
-      ],
-      "mitigation": [
-        "Radiation shielding",
-        "Annealing recovery",
-        "Radiation-resistant cell designs"
-      ]
+  "mission_profiles": {
+    "leo_imaging": {
+      "name": "LEO Earth Imaging",
+      "typical_altitude_km": [400, 800],
+      "typical_inclination_deg": [0, 98],
+      "radiation_environment": "moderate",
+      "thermal_cycling": "frequent",
+      "eclipse_fraction": 0.35
     },
-    "thermal_cycling": {
-      "name": "Thermal Cycling",
-      "description": "Mechanical stress from repeated temperature changes",
-      "primary_causes": [
-        "Eclipse transitions (hot to cold)",
-        "Orbital day/night cycles",
-        "Seasonal variations"
-      ],
-      "effects": [
-        "Solder joint fatigue",
-        "Cell interconnect failure",
-        "Delamination",
-        "Microcrack formation"
-      ],
-      "mitigation": [
-        "Flexible interconnects",
-        "Coefficient of thermal expansion matching",
-        "Robust mechanical design"
-      ]
+    "geo_communications": {
+      "name": "GEO Communications",
+      "typical_altitude_km": [35786, 35786],
+      "typical_inclination_deg": [0, 5],
+      "radiation_environment": "high",
+      "thermal_cycling": "daily",
+      "eclipse_fraction": 0.05
     },
-    "contamination": {
-      "name": "Surface Contamination",
-      "description": "Deposition of contaminants on panel surfaces",
-      "primary_causes": [
-        "Spacecraft outgassing",
-        "Micrometeoroid impacts",
-        "Atomic oxygen erosion (LEO)",
-        "UV-induced darkening"
-      ],
-      "effects": [
-        "Reduced light transmission",
-        "Surface darkening",
-        "Increased reflectance",
-        "Lower current generation"
-      ],
-      "mitigation": [
-        "Coverglass coatings",
-        "Clean manufacturing",
-        "Materials selection",
-        "UV-resistant coatings"
-      ]
+    "sso_observation": {
+      "name": "SSO Earth Observation",
+      "typical_altitude_km": [600, 800],
+      "typical_inclination_deg": [96, 99],
+      "radiation_environment": "moderate",
+      "thermal_cycling": "frequent",
+      "eclipse_fraction": 0.30
+    },
+    "deep_space": {
+      "name": "Deep Space Mission",
+      "typical_altitude_km": [100000, null],
+      "typical_inclination_deg": [0, 180],
+      "radiation_environment": "very_high",
+      "thermal_cycling": "minimal",
+      "eclipse_fraction": 0.10
     }
   }
 }

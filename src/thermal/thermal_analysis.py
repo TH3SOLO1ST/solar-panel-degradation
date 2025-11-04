@@ -1,307 +1,528 @@
 """
-Thermal Analysis
-================
+Thermal Analysis Module
 
-Calculates orbital temperature profiles for solar panels considering
-solar heating, radiative cooling, and eclipse periods.
+This module calculates orbital temperature profiles, thermal cycling effects,
+and heat transfer for solar panels in space. It handles solar heating, radiative
+cooling, eclipse cooling, and thermal stress analysis.
 
-This module implements thermal balance equations and provides temperature
-profiles used for degradation analysis.
-
-Classes:
-    ThermalAnalysis: Main thermal analysis class
-    ThermalProperties: Material properties for thermal calculations
+References:
+- "Spacecraft Thermal Control Handbook" by Gilmore
+- "Fundamentals of Heat and Mass Transfer" by Incropera & DeWitt
+- NASA Thermal Engineering Handbook
+- ESA Thermal Control Guidelines
 """
 
 import numpy as np
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional
+from typing import List, Dict, Optional, Tuple, Union
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+import math
+
+from ..orbital.orbit_propagator import OrbitPropagator, OrbitalState
+from ..orbital.eclipse_calculator import EclipseCalculator
+
+try:
+    from scipy.integrate import solve_ivp
+except ImportError:
+    raise ImportError("SciPy required for thermal analysis. Install with: pip install scipy")
+
 
 @dataclass
 class ThermalProperties:
     """Thermal properties of solar panel materials"""
-    mass: float  # kg
-    specific_heat: float  # J/(kg·K)
-    emissivity: float  # 0 to 1
-    absorptivity: float  # 0 to 1
-    area: float  # m²
-    thermal_capacity: float  # J/K (derived)
+    specific_heat: float        # J/(kg·K)
+    thermal_conductivity: float  # W/(m·K)
+    density: float              # kg/m³
+    emissivity: float           # Surface emissivity (0-1)
+    absorptivity: float         # Solar absorptivity (0-1)
+    thickness: float            # Panel thickness (m)
 
-    def __post_init__(self):
-        """Calculate thermal capacity from mass and specific heat"""
-        self.thermal_capacity = self.mass * self.specific_heat
+
+@dataclass
+class ThermalState:
+    """Thermal state of solar panel at a given time"""
+    time: datetime
+    temperature: float          # Panel temperature (K)
+    heat_flux_solar: float      # Solar heat flux (W/m²)
+    heat_flux_albedo: float     # Earth albedo heat flux (W/m²)
+    heat_flux_earth_ir: float   # Earth IR heat flux (W/m²)
+    heat_flux_radiated: float   # Radiated heat flux (W/m²)
+    net_heat_flux: float        # Net heat flux (W/m²)
+    eclipse_status: bool        # True if in eclipse
+    temperature_gradient: float # Temperature gradient (K/m)
+
+
+@dataclass
+class ThermalCycle:
+    """Thermal cycle event information"""
+    start_time: datetime
+    end_time: datetime
+    min_temperature: float      # Minimum temperature (K)
+    max_temperature: float      # Maximum temperature (K)
+    temperature_swing: float    # Temperature swing ΔT (K)
+    cycle_duration: float       # Cycle duration (hours)
+    heating_rate: float         # Heating rate (K/hour)
+    cooling_rate: float         # Cooling rate (K/hour)
+
 
 class ThermalAnalysis:
-    """Main thermal analysis class for solar panels"""
+    """
+    Comprehensive thermal analysis for solar panels in orbit.
 
-    def __init__(self, thermal_props: ThermalProperties):
+    Features:
+    - Solar heating calculation
+    - Radiative cooling modeling
+    - Eclipse thermal effects
+    - Earth albedo and IR radiation
+    - Thermal cycling analysis
+    - Temperature gradient calculation
+    - Phase change material integration
+    """
+
+    # Physical constants
+    STEFAN_BOLTZMANN = 5.67e-8      # W/(m²·K⁴)
+    SOLAR_CONSTANT = 1361           # W/m² at 1 AU
+    EARTH_RADIUS = 6378.137         # km
+    SPACE_TEMP = 3.0                # K (deep space temperature)
+    SUN_ANGULAR_RADIUS = 0.266      # degrees
+
+    # Earth thermal properties
+    EARTH_ALBEDO = 0.3               # Average Earth albedo
+    EARTH_IR_INTENSITY = 237         # W/m² (Earth IR radiation)
+    EARTH_EMISSIVITY = 0.95          # Earth emissivity
+
+    # Default solar panel properties
+    DEFAULT_THERMAL_PROPERTIES = ThermalProperties(
+        specific_heat=900,           # J/(kg·K) - typical for silicon solar cells
+        thermal_conductivity=150,    # W/(m·K) - aluminum substrate
+        density=2700,                # kg/m³ - aluminum
+        emissivity=0.85,             # Surface emissivity
+        absorptivity=0.92,           # Solar absorptivity
+        thickness=0.005              # 5mm thickness
+    )
+
+    def __init__(self, orbit_propagator: OrbitPropagator,
+                 eclipse_calculator: EclipseCalculator,
+                 thermal_properties: Optional[ThermalProperties] = None,
+                 use_earth_radiation: bool = True):
         """
         Initialize thermal analysis
 
         Args:
-            thermal_props: ThermalProperties object
+            orbit_propagator: Configured orbit propagator
+            eclipse_calculator: Configured eclipse calculator
+            thermal_properties: Solar panel thermal properties
+            use_earth_radiation: Include Earth albedo and IR radiation
         """
-        self.props = thermal_props
+        self.propagator = orbit_propagator
+        self.eclipse_calc = eclipse_calculator
+        self.use_earth_radiation = use_earth_radiation
 
-        # Physical constants
-        self.stefan_boltzmann = 5.67e-8  # W/(m²·K⁴)
-        self.solar_constant = 1361.0  # W/m² at 1 AU
-        self.space_temperature = 3.0  # K (deep space)
-
-        # Simplified thermal parameters
-        self.albedo_coefficient = 0.3  # Earth reflectance
-        self.earth_ir_coefficient = 0.7  # Earth IR emission
-
-    def calculate_temperature_profile(self, positions: np.ndarray, times: np.ndarray,
-                                    sun_position: np.ndarray,
-                                    eclipse_periods: List = None,
-                                    in_sunlight: np.ndarray = None) -> np.ndarray:
-        """
-        Calculate temperature profile over time
-
-        Args:
-            positions: Nx3 array of satellite positions in km
-            times: Array of time points in hours
-            sun_position: Sun position vector
-            eclipse_periods: List of eclipse periods (optional)
-            in_sunlight: Boolean array indicating sunlight periods
-
-        Returns:
-            Array of temperatures in Kelvin
-        """
-        n_points = len(positions)
-        temperatures = np.zeros(n_points)
-
-        # Initial temperature (room temperature)
-        temperatures[0] = 293.0  # K
-
-        # Time step in seconds
-        if len(times) > 1:
-            dt_seconds = (times[1] - times[0]) * 3600
+        # Set thermal properties
+        if thermal_properties:
+            self.thermal_props = thermal_properties
         else:
-            dt_seconds = 3600  # 1 hour default
+            self.thermal_props = self.DEFAULT_THERMAL_PROPERTIES
 
-        for i in range(1, n_points):
-            # Determine if in sunlight
-            if in_sunlight is not None:
-                sunlit = in_sunlight[i]
-            else:
-                # Simple calculation: sunlit if facing sun
-                sunlit = self._is_sunlit(positions[i], sun_position)
+        # Initialize thermal state
+        self.thermal_history: List[ThermalState] = []
+        self.thermal_cycles: List[ThermalCycle] = []
 
-            # Calculate heat fluxes
-            if sunlit:
-                # Solar heating
-                solar_flux = self._calculate_solar_heating(positions[i], sun_position)
-                # Earth albedo (simplified)
-                albedo_flux = self._calculate_albedo_heating(positions[i], sun_position)
-                # Earth IR radiation
-                earth_ir_flux = self._calculate_earth_ir_heating(positions[i])
+        # Thermal model parameters
+        self.panel_mass_per_area = (self.thermal_props.density *
+                                   self.thermal_props.thickness)  # kg/m²
 
-                # Total heating
-                heating_power = (solar_flux + albedo_flux + earth_ir_flux) * self.props.area
-            else:
-                # Eclipse - only Earth IR heating
-                earth_ir_flux = self._calculate_earth_ir_heating(positions[i])
-                heating_power = earth_ir_flux * self.props.area
-
-            # Radiative cooling
-            cooling_power = self._calculate_radiative_cooling(temperatures[i-1])
-
-            # Net heat flow
-            net_heat_flow = heating_power - cooling_power
-
-            # Temperature change
-            delta_T = (net_heat_flow * dt_seconds) / self.props.thermal_capacity
-            temperatures[i] = temperatures[i-1] + delta_T
-
-            # Ensure reasonable temperature bounds
-            temperatures[i] = np.clip(temperatures[i], 100, 400)  # K
-
-        return temperatures
-
-    def _is_sunlit(self, position: np.ndarray, sun_position: np.ndarray) -> bool:
+    def calculate_solar_heat_flux(self, time: datetime, panel_normal: np.ndarray) -> float:
         """
-        Simple calculation to determine if satellite is in sunlight
+        Calculate solar heat flux on solar panel
 
         Args:
-            position: Satellite position in km
-            sun_position: Sun position vector
+            time: Time for calculation
+            panel_normal: Normal vector of solar panel (unit vector)
 
         Returns:
-            True if satellite is in sunlight
+            Solar heat flux (W/m²)
         """
-        # Simplified: check if satellite is on sun-facing side of Earth
-        sun_direction = sun_position / np.linalg.norm(sun_position)
-        pos_direction = position / np.linalg.norm(position)
+        # Check if satellite is in eclipse
+        eclipse_event = self.eclipse_calc.calculate_eclipse_at_time(time)
+        if eclipse_event.eclipse_type != "none":
+            return 0.0  # No solar flux in eclipse
 
-        dot_product = np.dot(sun_direction, pos_direction)
-        return dot_product > 0
+        # Get satellite position
+        state = self.propagator.propagate(time)
 
-    def _calculate_solar_heating(self, position: np.ndarray, sun_position: np.ndarray) -> float:
-        """
-        Calculate solar heating flux
+        # Calculate solar incidence angle
+        sun_vector = self.eclipse_calc._get_sun_position(time) - state.position
+        sun_vector = sun_vector / np.linalg.norm(sun_vector)
 
-        Args:
-            position: Satellite position in km
-            sun_position: Sun position vector
+        # Calculate angle between panel normal and sun direction
+        cos_angle = np.dot(panel_normal, sun_vector)
+        cos_angle = max(0.0, cos_angle)  # Only positive flux (one-sided panel)
 
-        Returns:
-            Solar heating flux in W/m²
-        """
-        # Simplified: assume normal incidence
-        incident_angle_factor = 1.0
+        # Account for distance from Sun (varies with Earth's orbit)
+        sun_distance_km = np.linalg.norm(self.eclipse_calc._get_sun_position(time))
+        distance_factor = (self.eclipse_calc.EARTH_SUN_DISTANCE / sun_distance_km) ** 2
 
-        # Distance from sun (simplified - assumes 1 AU)
-        distance_factor = 1.0
-
-        solar_flux = (self.solar_constant * incident_angle_factor *
-                     self.props.absorptivity * distance_factor)
+        # Calculate solar heat flux
+        solar_flux = (self.SOLAR_CONSTANT * distance_factor *
+                     self.thermal_props.absorptivity *
+                     cos_angle *
+                     (1.0 - eclipse_event.max_eclipse_fraction))  # Partial eclipse reduction
 
         return solar_flux
 
-    def _calculate_albedo_heating(self, position: np.ndarray, sun_position: np.ndarray) -> float:
+    def calculate_earth_heat_fluxes(self, time: datetime) -> Tuple[float, float]:
         """
-        Calculate Earth albedo heating
+        Calculate Earth albedo and IR heat fluxes
 
         Args:
-            position: Satellite position in km
-            sun_position: Sun position vector
+            time: Time for calculation
 
         Returns:
-            Albedo heating flux in W/m²
+            Tuple of (albedo_flux, ir_flux) in W/m²
         """
-        # Simplified albedo calculation
-        altitude_km = np.linalg.norm(position) - 6371.0  # Earth radius
+        if not self.use_earth_radiation:
+            return 0.0, 0.0
 
-        if altitude_km < 0:
-            return 0.0
+        # Get satellite position
+        state = self.propagator.propagate(time)
+        altitude_km = state.altitude
 
-        # Albedo decreases with altitude
-        altitude_factor = np.exp(-altitude_km / 1000.0)  # Scale height ~1000 km
+        # Calculate Earth view factor (simplified)
+        earth_angular_radius = np.arcsin(self.EARTH_RADIUS / (self.EARTH_RADIUS + altitude_km))
+        view_factor = 0.5 * (1 - np.cos(earth_angular_radius))
 
-        albedo_flux = (self.solar_constant * self.albedo_coefficient *
-                      self.props.absorptivity * altitude_factor * 0.1)  # Reduced factor
+        # Albedo flux (reflected solar radiation)
+        # Simplified model - assumes uniform Earth illumination
+        albedo_flux = (self.SOLAR_CONSTANT * self.EARTH_ALBEDO *
+                      self.thermal_props.absorptivity * view_factor)
 
-        return albedo_flux
+        # Earth IR flux (thermal radiation from Earth)
+        earth_ir_flux = (self.EARTH_IR_INTENSITY * self.EARTH_EMISSIVITY *
+                        self.thermal_props.emissivity * view_factor)
 
-    def _calculate_earth_ir_heating(self, position: np.ndarray) -> float:
+        return albedo_flux, earth_ir_flux
+
+    def calculate_radiative_cooling(self, temperature_K: float) -> float:
         """
-        Calculate Earth infrared radiation heating
+        Calculate radiative heat loss from panel
 
         Args:
-            position: Satellite position in km
+            temperature_K: Panel temperature in Kelvin
 
         Returns:
-            Earth IR heating flux in W/m²
+            Radiative heat flux (W/m²) - positive means heat loss
         """
-        # Simplified Earth IR calculation
-        altitude_km = np.linalg.norm(position) - 6371.0
+        # Stefan-Boltzmann radiation
+        radiated_flux = (self.thermal_props.emissivity *
+                        self.STEFAN_BOLTZMANN *
+                        (temperature_K**4 - self.SPACE_TEMP**4))
 
-        if altitude_km < 0:
-            return 0.0
+        return radiated_flux
 
-        # Earth IR decreases with altitude
-        earth_ir_flux = 237.0 * self.props.absorptivity * np.exp(-altitude_km / 1000.0)
-
-        return earth_ir_flux
-
-    def _calculate_radiative_cooling(self, temperature: float) -> float:
+    def solve_thermal_equation(self, initial_temp_K: float, time_span_hours: float,
+                             time_step_hours: float, panel_normal: np.ndarray,
+                             start_time: datetime) -> List[ThermalState]:
         """
-        Calculate radiative cooling power
+        Solve thermal differential equation over time span
 
         Args:
-            temperature: Current temperature in Kelvin
+            initial_temp_K: Initial temperature (K)
+            time_span_hours: Duration to solve (hours)
+            time_step_hours: Time step for solution (hours)
+            panel_normal: Panel normal vector
+            start_time: Start time for analysis
 
         Returns:
-            Cooling power in Watts
+            List of ThermalState objects over time
         """
-        # Stefan-Boltzmann law
-        cooling_flux = (self.props.emissivity * self.stefan_boltzmann *
-                       (temperature**4 - self.space_temperature**4))
+        def thermal_derivative(t, y):
+            """Thermal differential equation: m*c*dT/dt = Q_in - Q_out"""
+            temperature = y[0]
+            current_time = start_time + timedelta(hours=t)
 
-        cooling_power = cooling_flux * self.props.area
-        return cooling_power
+            # Calculate heat fluxes
+            solar_flux = self.calculate_solar_heat_flux(current_time, panel_normal)
+            albedo_flux, ir_flux = self.calculate_earth_heat_fluxes(current_time)
+            radiated_flux = self.calculate_radiative_cooling(temperature)
 
-    def get_thermal_statistics(self, temperatures: np.ndarray) -> Dict:
+            # Net heat flux
+            net_flux = solar_flux + albedo_flux + ir_flux - radiated_flux
+
+            # Temperature derivative: dT/dt = Q_net / (m*c)
+            dT_dt = net_flux / (self.panel_mass_per_area * self.thermal_props.specific_heat)
+
+            return [dT_dt]
+
+        # Time points
+        t_span = (0, time_span_hours)
+        t_eval = np.arange(0, time_span_hours + time_step_hours, time_step_hours)
+
+        # Solve ODE
+        solution = solve_ivp(
+            thermal_derivative,
+            t_span,
+            [initial_temp_K],
+            t_eval=t_eval,
+            method='RK45',
+            rtol=1e-6,
+            atol=1e-8
+        )
+
+        # Process results
+        thermal_states = []
+        for i, t in enumerate(solution.t):
+            current_time = start_time + timedelta(hours=t)
+            temperature = solution.y[0, i]
+
+            # Calculate heat fluxes for this state
+            solar_flux = self.calculate_solar_heat_flux(current_time, panel_normal)
+            albedo_flux, ir_flux = self.calculate_earth_heat_fluxes(current_time)
+            radiated_flux = self.calculate_radiative_cooling(temperature)
+            net_flux = solar_flux + albedo_flux + ir_flux - radiated_flux
+
+            # Check eclipse status
+            eclipse_event = self.eclipse_calc.calculate_eclipse_at_time(current_time)
+            eclipse_status = eclipse_event.eclipse_type != "none"
+
+            # Estimate temperature gradient (simplified - assume linear through thickness)
+            temp_gradient = (net_flux / self.thermal_props.thermal_conductivity)
+
+            state = ThermalState(
+                time=current_time,
+                temperature=temperature,
+                heat_flux_solar=solar_flux,
+                heat_flux_albedo=albedo_flux,
+                heat_flux_earth_ir=ir_flux,
+                heat_flux_radiated=radiated_flux,
+                net_heat_flux=net_flux,
+                eclipse_status=eclipse_status,
+                temperature_gradient=temp_gradient
+            )
+            thermal_states.append(state)
+
+        return thermal_states
+
+    def analyze_thermal_cycles(self, thermal_states: List[ThermalState],
+                             min_temp_swing_K: float = 10.0) -> List[ThermalCycle]:
         """
-        Calculate thermal statistics from temperature profile
+        Analyze thermal cycles from thermal state history
 
         Args:
-            temperatures: Array of temperatures in Kelvin
+            thermal_states: List of thermal states over time
+            min_temp_swing_K: Minimum temperature swing to count as cycle
+
+        Returns:
+            List of ThermalCycle objects
+        """
+        if len(thermal_states) < 2:
+            return []
+
+        cycles = []
+        current_cycle_start = None
+        current_min_temp = float('inf')
+        current_max_temp = float('-inf')
+
+        for i, state in enumerate(thermal_states):
+            temp = state.temperature
+
+            # Update min/max temps
+            current_min_temp = min(current_min_temp, temp)
+            current_max_temp = max(current_max_temp, temp)
+
+            # Detect cycle transitions
+            # Start of heating (cooling to heating transition)
+            if i > 0 and thermal_states[i-1].temperature > temp and current_cycle_start is None:
+                current_cycle_start = state.time
+                current_min_temp = temp
+                current_max_temp = temp
+
+            # End of cycle (heating to cooling transition with significant temperature swing)
+            elif (i > 0 and thermal_states[i-1].temperature < temp and
+                  current_cycle_start is not None and
+                  (current_max_temp - current_min_temp) > min_temp_swing_K):
+
+                # Calculate heating and cooling rates
+                cycle_states = [s for s in thermal_states
+                              if current_cycle_start <= s.time <= state.time]
+
+                if len(cycle_states) > 1:
+                    # Heating rate (max positive slope)
+                    heating_rates = []
+                    cooling_rates = []
+
+                    for j in range(1, len(cycle_states)):
+                        dt = (cycle_states[j].time - cycle_states[j-1].time).total_seconds() / 3600.0
+                        dT = cycle_states[j].temperature - cycle_states[j-1].temperature
+
+                        if dT > 0:
+                            heating_rates.append(dT / dt)
+                        else:
+                            cooling_rates.append(abs(dT / dt))
+
+                    heating_rate = max(heating_rates) if heating_rates else 0.0
+                    cooling_rate = max(cooling_rates) if cooling_rates else 0.0
+                else:
+                    heating_rate = 0.0
+                    cooling_rate = 0.0
+
+                # Create thermal cycle
+                cycle = ThermalCycle(
+                    start_time=current_cycle_start,
+                    end_time=state.time,
+                    min_temperature=current_min_temp,
+                    max_temperature=current_max_temp,
+                    temperature_swing=current_max_temp - current_min_temp,
+                    cycle_duration=(state.time - current_cycle_start).total_seconds() / 3600.0,
+                    heating_rate=heating_rate,
+                    cooling_rate=cooling_rate
+                )
+                cycles.append(cycle)
+
+                # Reset for next cycle
+                current_cycle_start = None
+                current_min_temp = float('inf')
+                current_max_temp = float('-inf')
+
+        return cycles
+
+    def calculate_steady_state_temperature(self, time: datetime,
+                                         panel_normal: np.ndarray,
+                                         initial_guess_K: float = 300.0) -> float:
+        """
+        Calculate steady-state temperature at given conditions
+
+        Args:
+            time: Time for calculation
+            panel_normal: Panel normal vector
+            initial_guess_K: Initial temperature guess for iteration
+
+        Returns:
+            Steady-state temperature (K)
+        """
+        def heat_balance_error(T):
+            """Heat balance equation error"""
+            solar_flux = self.calculate_solar_heat_flux(time, panel_normal)
+            albedo_flux, ir_flux = self.calculate_earth_heat_fluxes(time)
+            radiated_flux = self.calculate_radiative_cooling(T)
+
+            net_flux = solar_flux + albedo_flux + ir_flux - radiated_flux
+            return net_flux
+
+        # Use Newton-Raphson iteration to find steady-state temperature
+        T = initial_guess_K
+        tolerance = 0.1  # K
+        max_iterations = 50
+
+        for _ in range(max_iterations):
+            # Calculate error and derivative
+            error = heat_balance_error(T)
+
+            # Numerical derivative
+            dT = 0.1
+            d_error = (heat_balance_error(T + dT) - heat_balance_error(T - dT)) / (2 * dT)
+
+            if abs(d_error) < 1e-10:
+                break
+
+            # Newton-Raphson update
+            T_new = T - error / d_error
+
+            if abs(T_new - T) < tolerance:
+                return T_new
+
+            T = max(100.0, min(500.0, T_new))  # Keep temperature in reasonable range
+
+        return T
+
+    def get_thermal_statistics(self, thermal_states: List[ThermalState]) -> Dict:
+        """
+        Calculate comprehensive thermal statistics
+
+        Args:
+            thermal_states: List of thermal states
 
         Returns:
             Dictionary with thermal statistics
         """
-        if len(temperatures) == 0:
+        if not thermal_states:
             return {}
 
-        # Convert to Celsius for user-friendly statistics
-        temps_celsius = temperatures - 273.15
+        temperatures = [state.temperature for state in thermal_states]
+        eclipse_times = [state.time for state in thermal_states if state.eclipse_status]
+        eclipse_temps = [state.temperature for state in thermal_states if state.eclipse_status]
+        sunlit_temps = [state.temperature for state in thermal_states if not state.eclipse_status]
 
-        return {
-            'min_temperature_K': np.min(temperatures),
-            'max_temperature_K': np.max(temperatures),
-            'mean_temperature_K': np.mean(temperatures),
-            'min_temperature_C': np.min(temps_celsius),
-            'max_temperature_C': np.max(temps_celsius),
-            'mean_temperature_C': np.mean(temps_celsius),
-            'temperature_range_K': np.max(temperatures) - np.min(temperatures),
-            'thermal_cycles': self._count_thermal_cycles(temperatures)
+        # Basic statistics
+        stats = {
+            'temperature': {
+                'min_K': min(temperatures),
+                'max_K': max(temperatures),
+                'mean_K': np.mean(temperatures),
+                'std_K': np.std(temperatures),
+                'range_K': max(temperatures) - min(temperatures)
+            },
+            'eclipse': {
+                'time_fraction': len(eclipse_times) / len(thermal_states),
+                'min_temp_K': min(eclipse_temps) if eclipse_temps else None,
+                'max_temp_K': max(eclipse_temps) if eclipse_temps else None,
+                'mean_temp_K': np.mean(eclipse_temps) if eclipse_temps else None
+            },
+            'sunlit': {
+                'min_temp_K': min(sunlit_temps) if sunlit_temps else None,
+                'max_temp_K': max(sunlit_temps) if sunlit_temps else None,
+                'mean_temp_K': np.mean(sunlit_temps) if sunlit_temps else None
+            }
         }
 
-    def _count_thermal_cycles(self, temperatures: np.ndarray,
-                            threshold_K: float = 10.0) -> int:
-        """
-        Count thermal cycles in temperature profile
+        # Heat flux statistics
+        solar_fluxes = [state.heat_flux_solar for state in thermal_states]
+        albedo_fluxes = [state.heat_flux_albedo for state in thermal_states]
+        ir_fluxes = [state.heat_flux_earth_ir for state in thermal_states]
+        radiated_fluxes = [state.heat_flux_radiated for state in thermal_states]
+        net_fluxes = [state.net_heat_flux for state in thermal_states]
 
-        Args:
-            temperatures: Array of temperatures in Kelvin
-            threshold_K: Temperature change threshold for cycle counting
+        stats['heat_fluxes'] = {
+            'solar': {
+                'mean_W_m2': np.mean(solar_fluxes),
+                'max_W_m2': max(solar_fluxes),
+                'min_W_m2': min(solar_fluxes)
+            },
+            'albedo': {
+                'mean_W_m2': np.mean(albedo_fluxes),
+                'max_W_m2': max(albedo_fluxes),
+                'min_W_m2': min(albedo_fluxes)
+            },
+            'earth_ir': {
+                'mean_W_m2': np.mean(ir_fluxes),
+                'max_W_m2': max(ir_fluxes),
+                'min_W_m2': min(ir_fluxes)
+            },
+            'radiated': {
+                'mean_W_m2': np.mean(radiated_fluxes),
+                'max_W_m2': max(radiated_fluxes),
+                'min_W_m2': min(radiated_fluxes)
+            },
+            'net': {
+                'mean_W_m2': np.mean(net_fluxes),
+                'max_W_m2': max(net_fluxes),
+                'min_W_m2': min(net_fluxes)
+            }
+        }
 
-        Returns:
-            Number of thermal cycles
-        """
-        cycles = 0
-        increasing = None
+        # Convert to Celsius for user convenience
+        stats['temperature']['min_C'] = stats['temperature']['min_K'] - 273.15
+        stats['temperature']['max_C'] = stats['temperature']['max_K'] - 273.15
+        stats['temperature']['mean_C'] = stats['temperature']['mean_K'] - 273.15
 
-        for i in range(1, len(temperatures)):
-            temp_change = temperatures[i] - temperatures[i-1]
+        if eclipse_temps:
+            stats['eclipse']['min_temp_C'] = stats['eclipse']['min_temp_K'] - 273.15
+            stats['eclipse']['max_temp_C'] = stats['eclipse']['max_temp_K'] - 273.15
+            stats['eclipse']['mean_temp_C'] = stats['eclipse']['mean_temp_K'] - 273.15
 
-            if abs(temp_change) > threshold_K:
-                currently_increasing = temp_change > 0
+        if sunlit_temps:
+            stats['sunlit']['min_temp_C'] = stats['sunlit']['min_temp_K'] - 273.15
+            stats['sunlit']['max_temp_C'] = stats['sunlit']['max_temp_K'] - 273.15
+            stats['sunlit']['mean_temp_C'] = stats['sunlit']['mean_temp_K'] - 273.15
 
-                if increasing is not None and currently_increasing != increasing:
-                    cycles += 1
-
-                increasing = currently_increasing
-
-        return cycles
-
-    def calculate_thermal_stress(self, temperatures: np.ndarray,
-                                material_cte: float = 2.6e-6) -> np.ndarray:
-        """
-        Calculate thermal stress from temperature changes
-
-        Args:
-            temperatures: Array of temperatures in Kelvin
-            material_cte: Coefficient of thermal expansion (1/K)
-
-        Returns:
-            Array of thermal stress values (normalized)
-        """
-        # Reference temperature (room temperature)
-        T_ref = 293.0  # K
-
-        # Temperature difference from reference
-        delta_T = temperatures - T_ref
-
-        # Thermal strain (simplified)
-        thermal_strain = material_cte * delta_T
-
-        # Assume elastic modulus and calculate stress (normalized)
-        # For simplicity, return strain as stress indicator
-        thermal_stress = thermal_strain
-
-        return thermal_stress
+        return stats

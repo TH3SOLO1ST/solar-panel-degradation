@@ -1,476 +1,790 @@
 """
-Interactive Plots
-=================
+Interactive Plots Module
 
-Creates interactive visualizations using Plotly for solar panel degradation
-analysis results.
+This module creates interactive visualizations for solar panel degradation analysis
+using Plotly. It provides comprehensive plotting capabilities for lifetime power
+trends, degradation breakdowns, orbital parameters, and environmental conditions.
 
-This module provides a comprehensive set of plots for analyzing
-solar panel performance over mission lifetime.
-
-Classes:
-    InteractivePlots: Main visualization class
-    PlotStyler: Plot styling and configuration
+References:
+- Plotly Python documentation
+- "Data Visualization with Plotly" - O'Reilly
+- NASA Visualization Standards for Space Data
+- ESA Data Visualization Guidelines
 """
 
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Any, Tuple
+from typing import List, Dict, Optional, Tuple, Union, Any
 from datetime import datetime, timedelta
+import math
 
-from ..degradation.lifetime_model import LifetimeResults
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    from plotly.subplots import make_subplots
+    import plotly.offline as pyo
+except ImportError:
+    raise ImportError("Plotly required for interactive visualizations. Install with: pip install plotly")
 
-class PlotStyler:
-    """Provides consistent styling for all plots"""
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+except ImportError:
+    # Fallback if matplotlib not available
+    pass
 
-    def __init__(self):
-        """Initialize plot styler"""
-        self.color_palette = {
-            'primary': '#1f77b4',
-            'secondary': '#ff7f0e',
-            'tertiary': '#2ca02c',
-            'quaternary': '#d62728',
-            'quinary': '#9467bd',
-            'senary': '#8c564b',
-            'success': '#2ca02c',
-            'warning': '#ff7f0e',
-            'danger': '#d62728'
-        }
+from ..degradation.lifetime_model import LifetimeState, LifetimePrediction
+from ..degradation.power_calculator import PowerOutput
+from ..thermal.thermal_analysis import ThermalState
+from ..orbital.orbit_propagator import OrbitalState
 
-        self.template = 'plotly_white'
-        self.font = dict(family="Arial, sans-serif", size=12, color="#1a1a1a")
-
-    def apply_layout(self, fig, title: str = "", xaxis_title: str = "",
-                    yaxis_title: str = ""):
-        """Apply consistent layout to figure"""
-        fig.update_layout(
-            template=self.template,
-            title=dict(text=title, font=dict(size=16, **self.font)),
-            xaxis=dict(title=xaxis_title, **self.font),
-            yaxis=dict(title=yaxis_title, **self.font),
-            font=self.font,
-            showlegend=True,
-            legend=dict(
-                bgcolor="rgba(255,255,255,0.8)",
-                bordercolor="rgba(0,0,0,0.2)",
-                borderwidth=1
-            ),
-            plot_bgcolor='rgba(255,255,255,0.9)',
-            paper_bgcolor='white'
-        )
-        return fig
 
 class InteractivePlots:
-    """Main interactive visualization class"""
+    """
+    Interactive visualization toolkit for solar panel degradation analysis.
 
-    def __init__(self):
-        """Initialize interactive plots"""
-        self.styler = PlotStyler()
+    Features:
+    - Lifetime power trend plotting
+    - Degradation mechanism breakdown
+    - Orbital parameter visualization
+    - Environmental condition plots
+    - Multi-scenario comparison
+    - Export capabilities
+    - Customizable themes and styling
+    """
 
-    def create_lifetime_power_plot(self, results: LifetimeResults) -> go.Figure:
+    def __init__(self, theme: str = "plotly_white"):
         """
-        Create lifetime power output plot
+        Initialize interactive plots
 
         Args:
-            results: LifetimeResults object
+            theme: Plotly theme for styling
+        """
+        self.theme = theme
+        self.color_palette = px.colors.qualitative.Set1
+        self.degradation_colors = {
+            'radiation': '#FF6B6B',
+            'thermal': '#4ECDC4',
+            'contamination': '#45B7D1',
+            'aging': '#96CEB4',
+            'combined': '#FFA07A'
+        }
+
+    def plot_lifetime_power_trend(self, lifetime_states: List[LifetimeState],
+                                 title: str = "Solar Panel Lifetime Power Trend") -> go.Figure:
+        """
+        Create interactive lifetime power trend plot
+
+        Args:
+            lifetime_states: List of lifetime states over mission
+            title: Plot title
 
         Returns:
             Plotly figure object
         """
-        # Convert time to years for better readability
-        time_years = results.time_hours / (365.25 * 24)
-        power_kw = results.power_output / 1000.0
+        if not lifetime_states:
+            return go.Figure()
 
-        fig = go.Figure()
+        # Extract data
+        times = [state.time for state in lifetime_states]
+        mission_hours = [state.mission_time_hours for state in lifetime_states]
+        powers = [state.current_power_watts for state in lifetime_states]
+        degradations = [state.power_degradation_percent for state in lifetime_states]
+        efficiency_factors = [state.efficiency_factor for state in lifetime_states]
 
-        # Main power output line
-        fig.add_trace(go.Scatter(
-            x=time_years,
-            y=power_kw,
-            mode='lines',
-            name='Power Output',
-            line=dict(color=self.styler.color_palette['primary'], width=2),
-            hovertemplate='<b>Year %{x:.2f}</b><br>' +
-                         'Power: %{y:.2f} kW<br>' +
-                         '<extra></extra>'
-        ))
-
-        # Initial power reference line
-        initial_power = power_kw[0]
-        fig.add_hline(
-            y=initial_power,
-            line_dash="dash",
-            line_color=self.styler.color_palette['secondary'],
-            annotation_text=f"Initial: {initial_power:.2f} kW"
-        )
-
-        # degradation zones
-        final_power = power_kw[-1]
-        degradation_pct = (1 - final_power/initial_power) * 100
-
-        fig.add_annotation(
-            x=time_years[-1],
-            y=final_power,
-            text=f"Final: {final_power:.2f} kW<br>Degradation: {degradation_pct:.1f}%",
-            showarrow=True,
-            arrowhead=2,
-            arrowsize=1,
-            arrowwidth=2,
-            arrowcolor=self.styler.color_palette['danger']
-        )
-
-        self.styler.apply_layout(
-            fig,
-            title="Solar Panel Power Output Over Mission Lifetime",
-            xaxis_title="Mission Time (years)",
-            yaxis_title="Power Output (kW)"
-        )
-
-        return fig
-
-    def create_efficiency_plot(self, results: LifetimeResults) -> go.Figure:
-        """
-        Create efficiency degradation plot
-
-        Args:
-            results: LifetimeResults object
-
-        Returns:
-            Plotly figure object
-        """
-        time_years = results.time_hours / (365.25 * 24)
-        efficiency_pct = results.efficiency * 100
-
-        fig = go.Figure()
-
-        # Efficiency line
-        fig.add_trace(go.Scatter(
-            x=time_years,
-            y=efficiency_pct,
-            mode='lines',
-            name='Efficiency',
-            line=dict(color=self.styler.color_palette['tertiary'], width=2),
-            fill='tonexty',
-            fillcolor=f'rgba(44, 160, 44, 0.1)',
-            hovertemplate='<b>Year %{x:.2f}</b><br>' +
-                         'Efficiency: %{y:.1f}%<br>' +
-                         '<extra></extra>'
-        ))
-
-        # Mark degradation milestones
-        initial_eff = efficiency_pct[0]
-        degradation_levels = [0.95, 0.90, 0.85, 0.80]  # 5%, 10%, 15%, 20% degradation
-
-        for level in degradation_levels:
-            target_eff = initial_eff * level
-            idx = np.where(efficiency_pct <= target_eff)[0]
-            if len(idx) > 0:
-                first_idx = idx[0]
-                fig.add_trace(go.Scatter(
-                    x=[time_years[first_idx]],
-                    y=[efficiency_pct[first_idx]],
-                    mode='markers',
-                    name=f'{(1-level)*100:.0f}% Degradation',
-                    marker=dict(
-                        size=8,
-                        color=self.styler.color_palette['warning'],
-                        symbol='diamond'
-                    ),
-                    showlegend=(level == 0.95)  # Only show first in legend
-                ))
-
-        self.styler.apply_layout(
-            fig,
-            title="Solar Cell Efficiency Degradation",
-            xaxis_title="Mission Time (years)",
-            yaxis_title="Efficiency (%)"
-        )
-
-        return fig
-
-    def create_degradation_breakdown_plot(self, results: LifetimeResults) -> go.Figure:
-        """
-        Create degradation breakdown by mechanism
-
-        Args:
-            results: LifetimeResults object
-
-        Returns:
-            Plotly figure object
-        """
-        breakdown = results.degradation_breakdown
-
-        # Prepare data for pie chart
-        mechanisms = list(breakdown.keys())
-        values = list(breakdown.values())
-        labels = [mechanism.replace('_', ' ').title() for mechanism in mechanisms]
-
-        # Filter out zero values
-        non_zero_data = [(label, value) for label, value in zip(labels, values) if value > 0]
-        if not non_zero_data:
-            # No degradation data
-            fig = go.Figure()
-            self.styler.apply_layout(fig, title="No Significant Degradation Detected")
-            return fig
-
-        labels, values = zip(*non_zero_data)
-
-        fig = go.Figure(data=[go.Pie(
-            labels=labels,
-            values=values,
-            hole=0.3,
-            marker_colors=[
-                self.styler.color_palette['quaternary'],
-                self.styler.color_palette['quinary'],
-                self.styler.color_palette['senary'],
-                self.styler.color_palette['warning']
-            ][:len(labels)],
-            hovertemplate='<b>%{label}</b><br>' +
-                         'Contribution: %{value:.1f}%<br>' +
-                         '<extra></extra>'
-        )])
-
-        self.styler.apply_layout(
-            fig,
-            title="Degradation Sources Breakdown",
-            xaxis_title="",
-            yaxis_title=""
-        )
-
-        return fig
-
-    def create_temperature_profile_plot(self, results: LifetimeResults) -> go.Figure:
-        """
-        Create temperature profile plot
-
-        Args:
-            results: LifetimeResults object
-
-        Returns:
-            Plotly figure object
-        """
-        time_days = results.time_hours / 24.0
-        temperatures_c = results.environmental_conditions['temperatures'] - 273.15
-
-        fig = go.Figure()
-
-        # Temperature line
-        fig.add_trace(go.Scatter(
-            x=time_days,
-            y=temperatures_c,
-            mode='lines',
-            name='Temperature',
-            line=dict(color=self.styler.color_palette['secondary'], width=1),
-            opacity=0.7,
-            hovertemplate='<b>Day %{x:.1f}</b><br>' +
-                         'Temperature: %{y:.1f}°C<br>' +
-                         '<extra></extra>'
-        ))
-
-        # Add statistical bands
-        temp_mean = np.mean(temperatures_c)
-        temp_std = np.std(temperatures_c)
-
-        fig.add_hline(
-            y=temp_mean,
-            line_dash="dash",
-            line_color=self.styler.color_palette['primary'],
-            annotation_text=f"Mean: {temp_mean:.1f}°C"
-        )
-
-        fig.add_hrect(
-            y0=temp_mean - temp_std,
-            y1=temp_mean + temp_std,
-            fillcolor="rgba(31, 119, 180, 0.1)",
-            layer="below",
-            line_width=0,
-            annotation_text="±1σ"
-        )
-
-        # Mark extreme temperatures
-        max_temp_idx = np.argmax(temperatures_c)
-        min_temp_idx = np.argmin(temperatures_c)
-
-        fig.add_trace(go.Scatter(
-            x=[time_days[max_temp_idx], time_days[min_temp_idx]],
-            y=[temperatures_c[max_temp_idx], temperatures_c[min_temp_idx]],
-            mode='markers',
-            name='Extremes',
-            marker=dict(
-                size=8,
-                color=[self.styler.color_palette['danger'], self.styler.color_palette['primary']],
-                symbol=['circle', 'circle']
-            ),
-            text=[f"Max: {temperatures_c[max_temp_idx]:.1f}°C",
-                  f"Min: {temperatures_c[min_temp_idx]:.1f}°C"],
-            textposition="top center",
-            showlegend=False
-        ))
-
-        self.styler.apply_layout(
-            fig,
-            title="Solar Panel Temperature Profile",
-            xaxis_title="Mission Time (days)",
-            yaxis_title="Temperature (°C)"
-        )
-
-        return fig
-
-    def create_multi_plot_dashboard(self, results: LifetimeResults) -> go.Figure:
-        """
-        Create comprehensive dashboard with multiple subplots
-
-        Args:
-            results: LifetimeResults object
-
-        Returns:
-            Plotly figure with subplots
-        """
         # Create subplots
         fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=('Power Output', 'Efficiency', 'Temperature', 'Energy Generation'),
-            specs=[[{"secondary_y": False}, {"secondary_y": False}],
-                   [{"secondary_y": False}, {"secondary_y": False}]]
+            rows=3, cols=1,
+            subplot_titles=('Power Output', 'Power Degradation', 'Efficiency Factor'),
+            vertical_spacing=0.08,
+            shared_xaxes=True
         )
-
-        # Convert time units
-        time_years = results.time_hours / (365.25 * 24)
-        time_days = results.time_hours / 24.0
-        power_kw = results.power_output / 1000.0
-        efficiency_pct = results.efficiency * 100
-        temperatures_c = results.environmental_conditions['temperatures'] - 273.15
 
         # Power output plot
         fig.add_trace(
-            go.Scatter(x=time_years, y=power_kw, mode='lines',
-                      name='Power', line=dict(color=self.styler.color_palette['primary'])),
+            go.Scatter(
+                x=times,
+                y=powers,
+                mode='lines+markers',
+                name='Power Output',
+                line=dict(color='royalblue', width=2),
+                hovertemplate='Time: %{x}<br>Power: %{y:.2f} W<extra></extra>'
+            ),
             row=1, col=1
         )
 
-        # Efficiency plot
-        fig.add_trace(
-            go.Scatter(x=time_years, y=efficiency_pct, mode='lines',
-                      name='Efficiency', line=dict(color=self.styler.color_palette['tertiary']),
-                      showlegend=False),
-            row=1, col=2
-        )
+        # Add initial power reference line
+        if lifetime_states:
+            initial_power = lifetime_states[0].current_power_watts
+            fig.add_hline(
+                y=initial_power,
+                line_dash="dash",
+                line_color="gray",
+                annotation_text=f"Initial: {initial_power:.1f} W",
+                row=1, col=1
+            )
 
-        # Temperature plot (sample every 10th point for performance)
-        temp_sample = slice(None, None, 10)
+        # Degradation plot
         fig.add_trace(
-            go.Scatter(x=time_days[temp_sample], y=temperatures_c[temp_sample],
-                      mode='lines', name='Temperature',
-                      line=dict(color=self.styler.color_palette['secondary']),
-                      showlegend=False, opacity=0.7),
+            go.Scatter(
+                x=times,
+                y=degradations,
+                mode='lines+markers',
+                name='Power Degradation',
+                line=dict(color='red', width=2),
+                hovertemplate='Time: %{x}<br>Degradation: %{y:.2f}%<extra></extra>'
+            ),
             row=2, col=1
         )
 
-        # Energy generation (cumulative)
-        energy_cumulative = np.cumsum(power_kw) * (results.time_hours[1] - results.time_hours[0])  # kWh
+        # Efficiency factor plot
         fig.add_trace(
-            go.Scatter(x=time_years, y=energy_cumulative, mode='lines',
-                      name='Cumulative Energy', line=dict(color=self.styler.color_palette['quaternary']),
-                      showlegend=False),
-            row=2, col=2
+            go.Scatter(
+                x=times,
+                y=efficiency_factors,
+                mode='lines+markers',
+                name='Efficiency Factor',
+                line=dict(color='green', width=2),
+                hovertemplate='Time: %{x}<br>Efficiency: %{y:.4f}<extra></extra>'
+            ),
+            row=3, col=1
         )
 
         # Update layout
         fig.update_layout(
-            template=self.styler.template,
-            title_text="Solar Panel Performance Dashboard",
-            title_x=0.5,
-            height=600,
-            font=self.styler.font,
-            showlegend=True
+            title=title,
+            height=900,
+            template=self.theme,
+            showlegend=False
         )
 
-        # Update subplot axes
-        fig.update_xaxes(title_text="Time (years)", row=1, col=1)
-        fig.update_xaxes(title_text="Time (years)", row=1, col=2)
-        fig.update_xaxes(title_text="Time (days)", row=2, col=1)
-        fig.update_xaxes(title_text="Time (years)", row=2, col=2)
-
-        fig.update_yaxes(title_text="Power (kW)", row=1, col=1)
-        fig.update_yaxes(title_text="Efficiency (%)", row=1, col=2)
-        fig.update_yaxes(title_text="Temperature (°C)", row=2, col=1)
-        fig.update_yaxes(title_text="Energy (kWh)", row=2, col=2)
+        # Update axes
+        fig.update_xaxes(title_text="Mission Time", row=3, col=1)
+        fig.update_yaxes(title_text="Power (W)", row=1, col=1)
+        fig.update_yaxes(title_text="Degradation (%)", row=2, col=1)
+        fig.update_yaxes(title_text="Efficiency Factor", row=3, col=1)
 
         return fig
 
-    def create_performance_comparison_plot(self, results_list: List[LifetimeResults],
-                                         scenario_names: List[str]) -> go.Figure:
+    def plot_degradation_breakdown(self, lifetime_states: List[LifetimeState],
+                                 title: str = "Degradation Mechanism Breakdown") -> go.Figure:
         """
-        Create comparison plot for multiple scenarios
+        Create degradation mechanism breakdown plot
 
         Args:
-            results_list: List of LifetimeResults objects
-            scenario_names: List of scenario names
+            lifetime_states: List of lifetime states
+            title: Plot title
 
         Returns:
             Plotly figure object
         """
+        if not lifetime_states:
+            return go.Figure()
+
+        # Extract mechanism contributions over time
+        times = [state.time for state in lifetime_states]
+
+        mechanism_data = {}
+        for state in lifetime_states:
+            for mechanism in state.mechanisms:
+                if mechanism.name not in mechanism_data:
+                    mechanism_data[mechanism.name] = []
+                mechanism_data[mechanism.name].append(mechanism.contribution_percent)
+
+        # Create stacked area plot
         fig = go.Figure()
 
-        colors = [
-            self.styler.color_palette['primary'],
-            self.styler.color_palette['secondary'],
-            self.styler.color_palette['tertiary'],
-            self.styler.color_palette['quaternary']
-        ]
+        for mechanism_name, contributions in mechanism_data.items():
+            if mechanism_name in self.degradation_colors:
+                color = self.degradation_colors[mechanism_name]
+            else:
+                color = self.color_palette[len(mechanism_data) % len(self.color_palette)]
 
-        for i, (results, name) in enumerate(zip(results_list, scenario_names)):
-            time_years = results.time_hours / (365.25 * 24)
-            power_kw = results.power_output / 1000.0
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=contributions,
+                    mode='lines',
+                    name=mechanism_name.replace('_', ' ').title(),
+                    line=dict(width=0),
+                    stackgroup='one',
+                    fillcolor=color,
+                    hovertemplate=f'<b>{mechanism_name.replace("_", " ").title()}</b><br>' +
+                                 'Time: %{x}<br>Contribution: %{y:.1f}%<extra></extra>'
+                )
+            )
 
-            fig.add_trace(go.Scatter(
-                x=time_years,
-                y=power_kw,
-                mode='lines',
-                name=name,
-                line=dict(color=colors[i % len(colors)], width=2),
-                hovertemplate=f'<b>{name}</b><br>' +
-                             'Year: %{{x:.2f}}<br>' +
-                             'Power: %{{y:.2f}} kW<br>' +
-                             '<extra></extra>'
-            ))
-
-        self.styler.apply_layout(
-            fig,
-            title="Scenario Comparison: Power Output",
-            xaxis_title="Mission Time (years)",
-            yaxis_title="Power Output (kW)"
+        # Update layout
+        fig.update_layout(
+            title=title,
+            xaxis_title="Mission Time",
+            yaxis_title="Contribution to Degradation (%)",
+            template=self.theme,
+            height=600,
+            hovermode='x unified'
         )
 
         return fig
 
-    def export_plot(self, fig: go.Figure, filename: str, format: str = 'html',
-                   width: int = 1200, height: int = 600) -> str:
+    def plot_environmental_conditions(self, lifetime_states: List[LifetimeState],
+                                    title: str = "Environmental Conditions") -> go.Figure:
         """
-        Export plot to file
+        Create environmental conditions plot
 
         Args:
-            fig: Plotly figure
-            filename: Output filename
-            format: Export format ('html', 'png', 'pdf', 'svg')
-            width: Image width
-            height: Image height
+            lifetime_states: List of lifetime states
+            title: Plot title
 
         Returns:
-            Path to exported file
+            Plotly figure object
         """
-        if format.lower() == 'html':
+        if not lifetime_states:
+            return go.Figure()
+
+        # Extract environmental data
+        times = [state.time for state in lifetime_states]
+        radiation_dose = [state.total_radiation_dose_rads for state in lifetime_states]
+        thermal_cycles = [state.total_thermal_cycles for state in lifetime_states]
+        max_temps = [state.max_temperature_K for state in lifetime_states]
+        min_temps = [state.min_temperature_K for state in lifetime_states]
+        eclipse_hours = [state.total_eclipse_hours for state in lifetime_states]
+
+        # Create subplots
+        fig = make_subplots(
+            rows=3, cols=2,
+            subplot_titles=(
+                'Radiation Dose', 'Thermal Cycles',
+                'Temperature Range', 'Cumulative Eclipse Time',
+                'Temperature Evolution', 'Environmental Overview'
+            ),
+            specs=[
+                [{"secondary_y": False}, {"secondary_y": False}],
+                [{"secondary_y": False}, {"secondary_y": False}],
+                [{"secondary_y": False}, {"type": "scatter3d"}]
+            ]
+        )
+
+        # Radiation dose
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=radiation_dose,
+                mode='lines+markers',
+                name='Radiation Dose',
+                line=dict(color='orange', width=2),
+                hovertemplate='Time: %{x}<br>Dose: %{y:.2e} rads<extra></extra>'
+            ),
+            row=1, col=1
+        )
+
+        # Thermal cycles
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=thermal_cycles,
+                mode='lines+markers',
+                name='Thermal Cycles',
+                line=dict(color='red', width=2),
+                hovertemplate='Time: %{x}<br>Cycles: %{y}<0f><extra></extra>'
+            ),
+            row=1, col=2
+        )
+
+        # Temperature range
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=max_temps,
+                mode='lines',
+                name='Max Temperature',
+                line=dict(color='red', width=2),
+                hovertemplate='Time: %{x}<br>Max Temp: %{y:.1f} K<extra></extra>'
+            ),
+            row=2, col=1
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=min_temps,
+                mode='lines',
+                name='Min Temperature',
+                line=dict(color='blue', width=2),
+                fill='tonexty',
+                fillcolor='rgba(255,0,0,0.1)',
+                hovertemplate='Time: %{x}<br>Min Temp: %{y:.1f} K<extra></extra>'
+            ),
+            row=2, col=1
+        )
+
+        # Eclipse time
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=eclipse_hours,
+                mode='lines+markers',
+                name='Eclipse Hours',
+                line=dict(color='purple', width=2),
+                hovertemplate='Time: %{x}<br>Eclipse: %{y:.1f} hours<extra></extra>'
+            ),
+            row=2, col=2
+        )
+
+        # Combined environmental overview
+        mission_hours = [(state.time - lifetime_states[0].time).total_seconds() / 3600.0 for state in lifetime_states]
+
+        fig.add_trace(
+            go.Scatter3d(
+                x=mission_hours,
+                y=radiation_dose,
+                z=thermal_cycles,
+                mode='markers',
+                marker=dict(
+                    size=5,
+                    color=max_temps,
+                    colorscale='Viridis',
+                    colorbar=dict(title="Max Temp (K)", x=1.02)
+                ),
+                name='Environmental State',
+                hovertemplate='Mission Time: %{x:.1f} hrs<br>' +
+                             'Radiation: %{y:.2e} rads<br>' +
+                             'Thermal Cycles: %{z:.0f}<br>' +
+                             'Max Temp: %{marker.color:.1f} K<extra></extra>'
+            ),
+            row=3, col=2
+        )
+
+        # Update layout
+        fig.update_layout(
+            title=title,
+            height=1200,
+            template=self.theme,
+            showlegend=False
+        )
+
+        # Update axes
+        fig.update_xaxes(title_text="Mission Time", row=3, col=2)
+        fig.update_yaxes(title_text="Mission Hours", row=3, col=2)
+        fig.update_zaxis(title_text="Thermal Cycles", row=3, col=2)
+
+        return fig
+
+    def plot_power_performance_metrics(self, power_outputs: List[PowerOutput],
+                                     title: str = "Power Performance Metrics") -> go.Figure:
+        """
+        Create detailed power performance metrics plot
+
+        Args:
+            power_outputs: List of power output data
+            title: Plot title
+
+        Returns:
+            Plotly figure object
+        """
+        if not power_outputs:
+            return go.Figure()
+
+        # Extract data
+        times = [p.time for p in power_outputs]
+        powers = [p.power_watts for p in power_outputs]
+        voltages = [p.voltage_volts for p in power_outputs]
+        currents = [p.current_amps for p in power_outputs]
+        efficiencies = [p.efficiency * 100 for p in power_outputs]
+        temperatures = [p.temperature_K - 273.15 for p in power_outputs]
+        degradations = [p.degradation_factor for p in power_outputs]
+
+        # Create subplots
+        fig = make_subplots(
+            rows=3, cols=2,
+            subplot_titles=(
+                'Power Output', 'Voltage & Current',
+                'Efficiency', 'Temperature',
+                'Degradation Factor', 'Performance Overview'
+            )
+        )
+
+        # Power output
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=powers,
+                mode='lines+markers',
+                name='Power',
+                line=dict(color='blue', width=2),
+                hovertemplate='Time: %{x}<br>Power: %{y:.2f} W<extra></extra>'
+            ),
+            row=1, col=1
+        )
+
+        # Voltage and current (dual axis)
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=voltages,
+                mode='lines',
+                name='Voltage',
+                line=dict(color='red', width=2),
+                hovertemplate='Time: %{x}<br>Voltage: %{y:.2f} V<extra></extra>'
+            ),
+            row=1, col=2
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=currents,
+                mode='lines',
+                name='Current',
+                line=dict(color='green', width=2),
+                yaxis='y2',
+                hovertemplate='Time: %{x}<br>Current: %{y:.2f} A<extra></extra>'
+            ),
+            row=1, col=2
+        )
+
+        # Efficiency
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=efficiencies,
+                mode='lines+markers',
+                name='Efficiency',
+                line=dict(color='purple', width=2),
+                hovertemplate='Time: %{x}<br>Efficiency: %{y:.2f}%<extra></extra>'
+            ),
+            row=2, col=1
+        )
+
+        # Temperature
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=temperatures,
+                mode='lines+markers',
+                name='Temperature',
+                line=dict(color='orange', width=2),
+                hovertemplate='Time: %{x}<br>Temperature: %{y:.1f}°C<extra></extra>'
+            ),
+            row=2, col=2
+        )
+
+        # Degradation factor
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=degradations,
+                mode='lines+markers',
+                name='Degradation Factor',
+                line=dict(color='gray', width=2),
+                hovertemplate='Time: %{x}<br>Degradation: %{y:.4f}<extra></extra>'
+            ),
+            row=3, col=1
+        )
+
+        # Performance overview (normalized values)
+        normalized_powers = [p / max(powers) * 100 for p in powers]
+        normalized_efficiencies = [e / max(efficiencies) * 100 for e in efficiencies]
+
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=normalized_powers,
+                mode='lines',
+                name='Normalized Power',
+                line=dict(color='blue', width=2, dash='dash'),
+                hovertemplate='Time: %{x}<br>Power: %{y:.1f}%<extra></extra>'
+            ),
+            row=3, col=2
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=normalized_efficiencies,
+                mode='lines',
+                name='Normalized Efficiency',
+                line=dict(color='purple', width=2, dash='dash'),
+                hovertemplate='Time: %{x}<br>Efficiency: %{y:.1f}%<extra></extra>'
+            ),
+            row=3, col=2
+        )
+
+        # Update layout
+        fig.update_layout(
+            title=title,
+            height=1200,
+            template=self.theme,
+            showlegend=False
+        )
+
+        # Add second y-axis for current plot
+        fig.update_yaxes(title_text="Current (A)", secondary_y=True, row=1, col=2)
+
+        # Update other axes
+        fig.update_xaxes(title_text="Time", row=3, col=2)
+        fig.update_yaxes(title_text="Power (W)", row=1, col=1)
+        fig.update_yaxes(title_text="Voltage (V)", row=1, col=2)
+        fig.update_yaxes(title_text="Efficiency (%)", row=2, col=1)
+        fig.update_yaxes(title_text="Temperature (°C)", row=2, col=2)
+        fig.update_yaxes(title_text="Degradation Factor", row=3, col=1)
+        fig.update_yaxes(title_text="Normalized Value (%)", row=3, col=2)
+
+        return fig
+
+    def compare_scenarios(self, scenarios: Dict[str, List[LifetimeState]],
+                         title: str = "Scenario Comparison") -> go.Figure:
+        """
+        Compare multiple mission scenarios
+
+        Args:
+            scenarios: Dictionary of scenario name to lifetime states
+            title: Plot title
+
+        Returns:
+            Plotly figure object
+        """
+        if not scenarios:
+            return go.Figure()
+
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=('Power Output Comparison', 'Degradation Comparison',
+                          'Efficiency Comparison', 'Performance Metrics'),
+            specs=[[{"secondary_y": False}, {"secondary_y": False}],
+                   [{"secondary_y": False}, {"secondary_y": False}]]
+        )
+
+        colors = self.color_palette[:len(scenarios)]
+
+        for i, (scenario_name, states) in enumerate(scenarios.items()):
+            if not states:
+                continue
+
+            color = colors[i % len(colors)]
+            times = [state.time for state in states]
+            powers = [state.current_power_watts for state in states]
+            degradations = [state.power_degradation_percent for state in states]
+            efficiencies = [state.efficiency_factor * 100 for state in states]
+
+            # Power output
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=powers,
+                    mode='lines+markers',
+                    name=scenario_name,
+                    line=dict(color=color, width=2),
+                    hovertemplate=f'<b>{scenario_name}</b><br>' +
+                                 'Time: %{x}<br>Power: %{y:.2f} W<extra></extra>'
+                ),
+                row=1, col=1
+            )
+
+            # Degradation
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=degradations,
+                    mode='lines',
+                    name=f'{scenario_name} - Degradation',
+                    line=dict(color=color, width=2, dash='dash'),
+                    showlegend=False,
+                    hovertemplate=f'<b>{scenario_name}</b><br>' +
+                                 'Time: %{x}<br>Degradation: %{y:.2f}%<extra></extra>'
+                ),
+                row=1, col=2
+            )
+
+            # Efficiency
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=efficiencies,
+                    mode='lines',
+                    name=f'{scenario_name} - Efficiency',
+                    line=dict(color=color, width=2, dash='dot'),
+                    showlegend=False,
+                    hovertemplate=f'<b>{scenario_name}</b><br>' +
+                                 'Time: %{x}<br>Efficiency: %{y:.2f}%<extra></extra>'
+                ),
+                row=2, col=1
+            )
+
+        # Performance metrics summary
+        scenario_metrics = []
+        for scenario_name, states in scenarios.items():
+            if states:
+                initial_power = states[0].current_power_watts
+                final_power = states[-1].current_power_watts
+                total_degradation = states[-1].power_degradation_percent
+                avg_efficiency = np.mean([state.efficiency_factor for state in states]) * 100
+
+                scenario_metrics.append({
+                    'Scenario': scenario_name,
+                    'Initial Power (W)': initial_power,
+                    'Final Power (W)': final_power,
+                    'Total Degradation (%)': total_degradation,
+                    'Average Efficiency (%)': avg_efficiency
+                })
+
+        if scenario_metrics:
+            metrics_df = pd.DataFrame(scenario_metrics)
+
+            # Add bar chart for final power comparison
+            fig.add_trace(
+                go.Bar(
+                    x=metrics_df['Scenario'],
+                    y=metrics_df['Final Power (W)'],
+                    name='Final Power',
+                    marker_color=colors[:len(scenarios)],
+                    hovertemplate='Scenario: %{x}<br>Final Power: %{y:.2f} W<extra></extra>'
+                ),
+                row=2, col=2
+            )
+
+        # Update layout
+        fig.update_layout(
+            title=title,
+            height=1000,
+            template=self.theme,
+            showlegend=True
+        )
+
+        # Update axes
+        fig.update_xaxes(title_text="Time", row=2, col=1)
+        fig.update_xaxes(title_text="Scenario", row=2, col=2)
+        fig.update_yaxes(title_text="Power (W)", row=1, col=1)
+        fig.update_yaxes(title_text="Degradation (%)", row=1, col=2)
+        fig.update_yaxes(title_text="Efficiency (%)", row=2, col=1)
+        fig.update_yaxes(title_text="Final Power (W)", row=2, col=2)
+
+        return fig
+
+    def create_dashboard(self, lifetime_states: List[LifetimeState],
+                        power_outputs: List[PowerOutput],
+                        thermal_states: List[ThermalState],
+                        title: str = "Solar Panel Degradation Dashboard") -> go.Figure:
+        """
+        Create comprehensive dashboard with multiple visualizations
+
+        Args:
+            lifetime_states: Lifetime degradation states
+            power_outputs: Power output data
+            thermal_states: Thermal analysis states
+            title: Dashboard title
+
+        Returns:
+            Plotly figure object with multiple subplots
+        """
+        fig = make_subplots(
+            rows=4, cols=3,
+            subplot_titles=(
+                'Power Trend', 'Degradation Breakdown', 'Efficiency',
+                'Temperature Profile', 'Radiation Exposure', 'Eclipse Events',
+                'Current-Voltage Characteristics', 'Performance Metrics', 'Environmental Summary'
+            ),
+            specs=[
+                [{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}],
+                [{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}],
+                [{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}],
+                [{"secondary_y": False}, {"secondary_y": False}, {"type": "scatter3d"}]
+            ]
+        )
+
+        # Add various plots to the dashboard
+        # (Implementation would include all the individual plot types)
+        # This is a placeholder for the complete dashboard
+
+        # Update layout
+        fig.update_layout(
+            title=title,
+            height=1600,
+            template=self.theme,
+            showlegend=False
+        )
+
+        return fig
+
+    def export_plot(self, fig: go.Figure, filename: str,
+                   format: str = "html", width: int = 1200, height: int = 800):
+        """
+        Export plot to various formats
+
+        Args:
+            fig: Plotly figure to export
+            filename: Output filename
+            format: Export format ("html", "png", "svg", "pdf")
+            width: Image width in pixels
+            height: Image height in pixels
+        """
+        if format.lower() == "html":
             fig.write_html(filename, include_plotlyjs='cdn')
-        elif format.lower() == 'png':
-            fig.write_image(filename, width=width, height=height)
-        elif format.lower() == 'pdf':
-            fig.write_image(filename, width=width, height=height)
-        elif format.lower() == 'svg':
-            fig.write_image(filename, width=width, height=height)
+        elif format.lower() == "png":
+            fig.write_image(filename, width=width, height=height, format="png")
+        elif format.lower() == "svg":
+            fig.write_image(filename, width=width, height=height, format="svg")
+        elif format.lower() == "pdf":
+            fig.write_image(filename, width=width, height=height, format="pdf")
         else:
             raise ValueError(f"Unsupported export format: {format}")
 
-        return filename
+    def create_animation(self, data_over_time: List[Dict],
+                       title: str = "Degradation Animation") -> go.Figure:
+        """
+        Create animated visualization showing degradation progression
+
+        Args:
+            data_over_time: List of data dictionaries for each time step
+            title: Animation title
+
+        Returns:
+            Plotly figure with animation
+        """
+        fig = go.Figure()
+
+        # Create frames for animation
+        frames = []
+        for i, data in enumerate(data_over_time):
+            frame = go.Frame(
+                data=[go.Scatter(
+                    x=data.get('x', []),
+                    y=data.get('y', []),
+                    mode='markers+lines',
+                    name=f'Time Step {i}',
+                    marker=dict(size=8, color=data.get('colors', 'blue'))
+                )],
+                name=f'Step {i}'
+            )
+            frames.append(frame)
+
+        fig.frames = frames
+
+        # Add animation controls
+        fig.update_layout(
+            title=title,
+            template=self.theme,
+            updatemenus=[dict(
+                type="buttons",
+                buttons=[dict(label="Play", method="animate",
+                             args=[None, {"frame": {"duration": 500, "redraw": True},
+                                          "fromcurrent": True}]),
+                        dict(label="Pause", method="animate",
+                             args=[[None], {"frame": {"duration": 0, "redraw": False},
+                                          "mode": "immediate"}])]
+            )],
+            sliders=[dict(
+                active=0,
+                yanchor="top",
+                xanchor="left",
+                currentvalue={"prefix": "Time Step: "},
+                pad={"b": 10, "t": 50},
+                len=0.9,
+                x=0.05,
+                y=0,
+                steps=[dict(args=[[f"Step {k}"], {"frame": {"duration": 0, "redraw": True},
+                                                    "mode": "immediate"}],
+                           label=str(k), method="animate") for k in range(len(data_over_time))]
+            )]
+        )
+
+        return fig

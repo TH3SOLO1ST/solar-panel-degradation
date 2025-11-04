@@ -1,345 +1,616 @@
 """
-Power Calculator
-================
+Power Calculator Module
 
-Calculates instantaneous solar panel power output considering all
-environmental factors and degradation mechanisms.
+This module calculates instantaneous solar panel power output including
+environmental corrections, degradation effects, and I-V curve modeling.
+It implements equivalent circuit models and temperature-dependent performance.
 
-This module implements the physics-based power calculation models
-for different solar cell technologies under various operating conditions.
-
-Classes:
-    PowerCalculator: Main power calculation class
-    SolarCellModel: Solar cell electrical characteristics
-    EnvironmentalFactors: Environmental condition corrections
+References:
+- "Solar Cell Device Physics" - Stephen Fonash
+- "Solar Cells: Operating Principles, Technology, and System Applications" - Green
+- "Photovoltaic Systems Engineering" - Messenger & Ventre
+- NASA Solar Cell Performance Handbook
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import List, Dict, Optional, Tuple, Union
 from dataclasses import dataclass
+from datetime import datetime
+import math
+
+from ..orbital.orbit_propagator import OrbitPropagator, OrbitalState
+from ..orbital.eclipse_calculator import EclipseCalculator
+from ..radiation.damage_model import RadiationDamageModel
+from ..thermal.thermal_analysis import ThermalAnalysis, ThermalState
+
 
 @dataclass
-class SolarCellSpecs:
-    """Solar panel specifications"""
-    technology: str          # 'silicon', 'multi_junction'
-    area_m2: float          # Panel area in m²
-    initial_efficiency: float  # Initial efficiency (0 to 1)
-    series_resistance: float   # Series resistance in ohms
-    shunt_resistance: float    # Shunt resistance in ohms
-    ideality_factor: float     # Diode ideality factor
-    temperature_coefficient: float  # Temperature coefficient per K
-    reference_temperature: float  # Reference temperature in K
+class SolarCellParameters:
+    """Electrical parameters of solar cell at standard conditions"""
+    short_circuit_current: float    # Isc (A/m²)
+    open_circuit_voltage: float     # Voc (V)
+    max_power_current: float        # Imp (A/m²)
+    max_power_voltage: float        # Vmp (V)
+    fill_factor: float              # FF (0-1)
+    efficiency: float               # η (0-1)
+    series_resistance: float        # Rs (Ω·m²)
+    shunt_resistance: float         # Rsh (Ω·m²)
+    ideality_factor: float          # n (diode ideality factor)
+    saturation_current: float       # I₀ (A/m²)
+
 
 @dataclass
-class EnvironmentalConditions:
-    """Environmental operating conditions"""
-    solar_flux: float         # Solar flux in W/m²
-    incident_angle: float     # Incident angle in radians
-    temperature: float        # Cell temperature in K
-    radiation_factor: float   # Radiation degradation factor
-    thermal_factor: float     # Thermal degradation factor
-    contamination_factor: float  # Contamination degradation factor
+class PowerOutput:
+    """Power output data at a specific time"""
+    time: datetime
+    power_watts: float              # Total power output (W)
+    power_density_wm2: float        # Power per unit area (W/m²)
+    current_amps: float             # Current output (A)
+    voltage_volts: float            # Voltage output (V)
+    efficiency: float               # Current efficiency (0-1)
+    irradiance_wm2: float           # Solar irradiance (W/m²)
+    temperature_K: float            # Cell temperature (K)
+    degradation_factor: float       # Overall degradation factor (0-1)
+    eclipse_fraction: float         # Eclipse shadow fraction (0-1)
 
-class SolarCellModel:
-    """Solar cell electrical characteristics modeling"""
 
-    def __init__(self, specs: SolarCellSpecs):
-        """
-        Initialize solar cell model
+@dataclass
+class IVCurve:
+    """I-V curve data for solar panel"""
+    voltages: np.ndarray            # Voltage points (V)
+    currents: np.ndarray            # Current points (A/m²)
+    powers: np.ndarray              # Power points (W/m²)
+    voc: float                      # Open circuit voltage (V)
+    isc: float                      # Short circuit current (A/m²)
+    vmp: float                      # Voltage at max power (V)
+    imp: float                      # Current at max power (A/m²)
+    pmp: float                      # Maximum power (W/m²)
+    ff: float                       # Fill factor (0-1)
 
-        Args:
-            specs: SolarCellSpecs object
-        """
-        self.specs = specs
-        self._initialize_electrical_parameters()
-
-    def _initialize_electrical_parameters(self):
-        """Initialize electrical parameters based on technology"""
-        if self.specs.technology == "silicon":
-            self.thermal_voltage = 0.0259  # V at room temperature
-            self.dark_saturation_current = 1e-10  # A
-            self.photo_current_coefficient = 0.032  # A per W/m²
-        elif self.specs.technology == "multi_junction":
-            self.thermal_voltage = 0.0259
-            self.dark_saturation_current = 1e-12  # A (lower for multi-junction)
-            self.photo_current_coefficient = 0.035  # A per W/m²
-        else:
-            raise ValueError(f"Unsupported technology: {self.specs.technology}")
-
-    def calculate_iv_curve(self, conditions: EnvironmentalConditions,
-                         voltage_range: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Calculate I-V curve for given conditions
-
-        Args:
-            conditions: EnvironmentalConditions object
-            voltage_range: Array of voltage points (optional)
-
-        Returns:
-            Tuple of (current_array, voltage_array)
-        """
-        if voltage_range is None:
-            # Generate voltage range around expected maximum power point
-            voc_estimate = self._estimate_open_circuit_voltage(conditions)
-            voltage_range = np.linspace(0, voc_estimate * 1.2, 100)
-
-        current_array = np.zeros_like(voltage_range)
-
-        for i, v in enumerate(voltage_range):
-            current_array[i] = self._calculate_current_at_voltage(v, conditions)
-
-        return current_array, voltage_range
-
-    def _estimate_open_circuit_voltage(self, conditions: EnvironmentalConditions) -> float:
-        """Estimate open circuit voltage"""
-        # Simplified estimation based on bandgap and temperature
-        if self.specs.technology == "silicon":
-            bandgap = 1.12  # eV
-        else:  # multi_junction
-            bandgap = 1.85  # eV (top cell determines voltage)
-
-        voc = (bandgap - 0.3) * (1 + self.specs.temperature_coefficient *
-                                (conditions.temperature - self.specs.reference_temperature))
-        return max(0, voc)
-
-    def _calculate_current_at_voltage(self, voltage: float,
-                                    conditions: EnvironmentalConditions) -> float:
-        """
-        Calculate current at specific voltage point
-
-        Args:
-            voltage: Operating voltage
-            conditions: Environmental conditions
-
-        Returns:
-            Current in Amperes
-        """
-        # Temperature-adjusted thermal voltage
-        vt = self.thermal_voltage * (conditions.temperature / 298.0)
-
-        # Photocurrent
-        iph = (conditions.solar_flux * self.specs.area_m2 *
-               self.photo_current_coefficient *
-               np.cos(conditions.incident_angle) *
-               self.specs.initial_efficiency *
-               conditions.radiation_factor *
-               conditions.thermal_factor *
-               conditions.contamination_factor)
-
-        # Diode current
-        try:
-            id = self.dark_saturation_current * (np.exp((voltage + iph * self.specs.series_resistance) /
-                                                        (self.specs.ideality_factor * vt)) - 1)
-        except OverflowError:
-            id = 1e10  # Large current for numerical stability
-
-        # Shunt current
-        ish = voltage / self.specs.shunt_resistance
-
-        # Total current
-        current = iph - id - ish
-
-        return max(0, current)  # Ensure non-negative current
-
-    def find_maximum_power_point(self, conditions: EnvironmentalConditions) -> Dict:
-        """
-        Find maximum power point for given conditions
-
-        Args:
-            conditions: Environmental conditions
-
-        Returns:
-            Dictionary with MPP information
-        """
-        # Generate I-V curve
-        current, voltage = self.calculate_iv_curve(conditions)
-
-        # Calculate power
-        power = current * voltage
-
-        # Find maximum power point
-        max_power_idx = np.argmax(power)
-        max_power = power[max_power_idx]
-        mpp_voltage = voltage[max_power_idx]
-        mpp_current = current[max_power_idx]
-
-        # Calculate efficiency
-        input_power = (conditions.solar_flux * self.specs.area_m2 *
-                      np.cos(conditions.incident_angle))
-        efficiency = max_power / input_power if input_power > 0 else 0
-
-        return {
-            'max_power_W': max_power,
-            'mpp_voltage_V': mpp_voltage,
-            'mpp_current_A': mpp_current,
-            'efficiency': efficiency,
-            'fill_factor': max_power / (mpp_voltage * mpp_current) if mpp_voltage * mpp_current > 0 else 0
-        }
 
 class PowerCalculator:
-    """Main power calculation class"""
+    """
+    Comprehensive solar panel power calculator.
 
-    def __init__(self, specs: SolarCellSpecs):
+    Features:
+    - I-V curve modeling using equivalent circuit
+    - Temperature-dependent performance
+    - Radiation degradation effects
+    - Eclipse and shadow effects
+    - Multi-junction cell modeling
+    - Real-time power prediction
+    """
+
+    # Physical constants
+    k_B = 1.381e-23              # Boltzmann constant (J/K)
+    q = 1.602e-19                # Elementary charge (C)
+    SOLAR_CONSTANT = 1361        # W/m² at 1 AU
+
+    # Standard test conditions
+    STC_TEMPERATURE = 298.15     # K (25°C)
+    STC_IRRADIANCE = 1000        # W/m²
+    AIR_MASS = 1.5              # AM1.5 solar spectrum
+
+    # Default solar cell parameters (Silicon)
+    DEFAULT_CELL_PARAMS = SolarCellParameters(
+        short_circuit_current=400,      # A/m² (40 mA/cm²)
+        open_circuit_voltage=0.62,      # V
+        max_power_current=380,          # A/m² (38 mA/cm²)
+        max_power_voltage=0.52,         # V
+        fill_factor=0.82,               # 82%
+        efficiency=0.20,                # 20%
+        series_resistance=0.01,         # Ω·m²
+        shunt_resistance=1000,          # Ω·m²
+        ideality_factor=1.2,            # Typical for silicon
+        saturation_current=1e-10        # A/m²
+    )
+
+    def __init__(self, panel_area_m2: float,
+                 cell_parameters: Optional[SolarCellParameters] = None,
+                 cell_type: str = "silicon"):
         """
         Initialize power calculator
 
         Args:
-            specs: Solar panel specifications
+            panel_area_m2: Solar panel area in square meters
+            cell_parameters: Solar cell electrical parameters
+            cell_type: Type of solar cell technology
         """
-        self.specs = specs
-        self.cell_model = SolarCellModel(specs)
+        self.panel_area = panel_area_m2
+        self.cell_type = cell_type
 
-    def calculate_power_series(self, positions: np.ndarray, times: np.ndarray,
-                             temperatures: np.ndarray, sun_position: np.ndarray,
-                             degradation_factors: Dict) -> np.ndarray:
+        # Set cell parameters
+        if cell_parameters:
+            self.cell_params = cell_parameters
+        else:
+            self.cell_params = self.DEFAULT_CELL_PARAMS
+
+        # Initialize power output history
+        self.power_history: List[PowerOutput] = []
+
+    def calculate_thermal_voltage(self, temperature_K: float) -> float:
         """
-        Calculate power output over time
+        Calculate thermal voltage Vt = kT/q
 
         Args:
-            positions: Nx3 array of satellite positions
-            times: Array of time points
-            temperatures: Array of cell temperatures
-            sun_position: Sun position vector
-            degradation_factors: Dictionary of degradation factors
+            temperature_K: Temperature in Kelvin
 
         Returns:
-            Array of power outputs in Watts
+            Thermal voltage in Volts
         """
-        n_points = len(positions)
-        power_output = np.zeros(n_points)
+        return self.k_B * temperature_K / self.q
 
-        for i in range(n_points):
-            # Calculate environmental conditions
-            conditions = self._calculate_environmental_conditions(
-                positions[i], temperatures[i], sun_position, degradation_factors, i
-            )
-
-            # Calculate power at maximum power point
-            mpp = self.cell_model.find_maximum_power_point(conditions)
-            power_output[i] = mpp['max_power_W']
-
-        return power_output
-
-    def _calculate_environmental_conditions(self, position: np.ndarray,
-                                          temperature: float, sun_position: np.ndarray,
-                                          degradation_factors: Dict,
-                                          time_index: int) -> EnvironmentalConditions:
+    def calculate_saturation_current(self, temperature_K: float) -> float:
         """
-        Calculate environmental conditions for a specific time
+        Calculate temperature-dependent saturation current
 
         Args:
-            position: Satellite position
-            temperature: Cell temperature
-            sun_position: Sun position vector
-            degradation_factors: Dictionary of degradation factors
-            time_index: Index in time series
+            temperature_K: Temperature in Kelvin
 
         Returns:
-            EnvironmentalConditions object
+            Saturation current (A/m²)
         """
-        # Solar flux calculation
-        solar_flux = self._calculate_solar_flux(position, sun_position)
+        # I₀(T) = I₀(Tref) × (T/Tref)³ × exp(-Eg/q × (1/T - 1/Tref)/Vt)
+        T_ref = self.STC_TEMPERATURE
+        Eg = 1.12  # Band gap of silicon in eV
+        Vt = self.calculate_thermal_voltage(temperature_K)
+        Vt_ref = self.calculate_thermal_voltage(T_ref)
 
-        # Incident angle calculation
-        incident_angle = self._calculate_incident_angle(position, sun_position)
+        I0_T = (self.cell_params.saturation_current *
+               (temperature_K / T_ref)**3 *
+               np.exp(-Eg * (1/temperature_K - 1/T_ref) / Vt))
 
-        # Get degradation factors for this time point
-        rad_factor = self._get_time_series_factor(degradation_factors.get('radiation', []), time_index, 1.0)
-        thermal_factor = self._get_time_series_factor(degradation_factors.get('thermal', []), time_index, 1.0)
-        contamination_factor = self._get_time_series_factor(degradation_factors.get('contamination', []), time_index, 1.0)
+        return I0_T
 
-        return EnvironmentalConditions(
-            solar_flux=solar_flux,
-            incident_angle=incident_angle,
-            temperature=temperature,
-            radiation_factor=rad_factor,
-            thermal_factor=thermal_factor,
-            contamination_factor=contamination_factor
+    def calculate_bandgap_temp_coefficient(self, temperature_K: float) -> float:
+        """
+        Calculate temperature-dependent band gap
+
+        Args:
+            temperature_K: Temperature in Kelvin
+
+        Returns:
+            Band gap energy in eV
+        """
+        # Varshni equation for silicon band gap
+        Eg_0 = 1.17    # Band gap at 0K
+        alpha = 4.73e-4  # eV/K
+        beta = 636       # K
+
+        Eg_T = Eg_0 - (alpha * temperature_K**2) / (temperature_K + beta)
+        return Eg_T
+
+    def calculate_photocurrent(self, irradiance_wm2: float,
+                             temperature_K: float) -> float:
+        """
+        Calculate photocurrent based on irradiance and temperature
+
+        Args:
+            irradiance_wm2: Solar irradiance (W/m²)
+            temperature_K: Cell temperature (K)
+
+        Returns:
+            Photocurrent (A/m²)
+        """
+        # Linear scaling with irradiance
+        I_ph_STC = self.cell_params.short_circuit_current
+        I_ph = I_ph_STC * (irradiance_wm2 / self.STC_IRRADIANCE)
+
+        # Temperature coefficient for current (positive)
+        alpha_Isc = 0.0005  # 0.05%/K for silicon
+        delta_T = temperature_K - self.STC_TEMPERATURE
+
+        I_ph_temp = I_ph * (1 + alpha_Isc * delta_T)
+
+        return I_ph_temp
+
+    def calculate_single_diode_current(self, voltage: float,
+                                     photocurrent: float,
+                                     saturation_current: float,
+                                     thermal_voltage: float,
+                                     series_resistance: float,
+                                     shunt_resistance: float) -> float:
+        """
+        Calculate current using single-diode model
+
+        Args:
+            voltage: Voltage across cell (V)
+            photocurrent: Photocurrent (A/m²)
+            saturation_current: Diode saturation current (A/m²)
+            thermal_voltage: Thermal voltage (V)
+            series_resistance: Series resistance (Ω·m²)
+            shunt_resistance: Shunt resistance (Ω·m²)
+
+        Returns:
+            Current (A/m²)
+        """
+        # Single-diode equation: I = Iph - I₀ × exp((V + I×Rs)/(n×Vt)) - (V + I×Rs)/Rsh
+        # This requires iterative solution, use Lambert W function approximation
+
+        n = self.cell_params.ideality_factor
+
+        # Simplified analytical solution (ignoring Rs and Rsh for initial estimate)
+        I_approx = photocurrent - saturation_current * (np.exp(voltage / (n * thermal_voltage)) - 1)
+
+        # Include series resistance effect (first-order correction)
+        if series_resistance > 0:
+            I_corrected = I_approx * (1 - series_resistance * I_approx / voltage) if voltage != 0 else I_approx
+        else:
+            I_corrected = I_approx
+
+        # Include shunt resistance effect
+        if shunt_resistance > 0:
+            I_shunt = voltage / shunt_resistance
+            I_corrected -= I_shunt
+
+        return max(0, I_corrected)
+
+    def calculate_iv_curve(self, irradiance_wm2: float,
+                          temperature_K: float,
+                          degradation_factor: float = 1.0) -> IVCurve:
+        """
+        Calculate complete I-V curve
+
+        Args:
+            irradiance_wm2: Solar irradiance (W/m²)
+            temperature_K: Cell temperature (K)
+            degradation_factor: Overall degradation factor (0-1)
+
+        Returns:
+            Complete I-V curve data
+        """
+        # Calculate temperature-dependent parameters
+        Vt = self.calculate_thermal_voltage(temperature_K)
+        I0 = self.calculate_saturation_current(temperature_K)
+        I_ph = self.calculate_photocurrent(irradiance_wm2, temperature_K)
+
+        # Apply degradation to parameters
+        I_ph *= degradation_factor
+        I0 /= degradation_factor  # Saturation current increases with degradation
+        Rs = self.cell_params.series_resistance * (2 - degradation_factor)  # Rs increases with degradation
+        Rsh = self.cell_params.shunt_resistance * degradation_factor  # Rsh decreases with degradation
+
+        # Generate voltage points
+        V_max = self.cell_params.open_circuit_voltage * 1.2  # Slightly beyond Voc
+        voltages = np.linspace(0, V_max, 200)
+
+        # Calculate current for each voltage
+        currents = np.array([
+            self.calculate_single_diode_current(V, I_ph, I0, Vt, Rs, Rsh)
+            for V in voltages
+        ])
+
+        # Calculate power
+        powers = voltages * currents
+
+        # Find key points
+        # Open circuit voltage (where current = 0)
+        voc_idx = np.where(currents <= 0)[0]
+        voc = voltages[voc_idx[0]] if len(voc_idx) > 0 else voltages[-1]
+
+        # Short circuit current (at V = 0)
+        isc = currents[0]
+
+        # Maximum power point
+        max_power_idx = np.argmax(powers)
+        vmp = voltages[max_power_idx]
+        imp = currents[max_power_idx]
+        pmp = powers[max_power_idx]
+
+        # Fill factor
+        ff = pmp / (voc * isc) if (voc * isc) > 0 else 0
+
+        return IVCurve(
+            voltages=voltages,
+            currents=currents,
+            powers=powers,
+            voc=voc,
+            isc=isc,
+            vmp=vmp,
+            imp=imp,
+            pmp=pmp,
+            ff=ff
         )
 
-    def _calculate_solar_flux(self, position: np.ndarray, sun_position: np.ndarray) -> float:
-        """Calculate solar flux at satellite position"""
-        # Simplified: use solar constant adjusted by distance from sun
-        # (assumes 1 AU distance for Earth orbits)
-        solar_constant = 1361.0  # W/m²
-
-        # Check if satellite is in Earth's shadow (simplified)
-        earth_radius = 6371.0  # km
-        sat_distance = np.linalg.norm(position)
-
-        if sat_distance < earth_radius:
-            return 0.0  # Inside Earth
-
-        # Simple shadow check
-        sun_direction = sun_position / np.linalg.norm(sun_position)
-        sat_direction = position / np.linalg.norm(position)
-
-        if np.dot(sun_direction, sat_direction) < 0:
-            return 0.0  # In Earth's shadow
-
-        return solar_constant
-
-    def _calculate_incident_angle(self, position: np.ndarray, sun_position: np.ndarray) -> float:
-        """Calculate solar incident angle"""
-        # Simplified: assume panels always face the sun optimally
-        # In reality, this would depend on spacecraft attitude
-        sun_vector = sun_position - position
-        sun_vector = sun_vector / np.linalg.norm(sun_vector)
-
-        # Assume panel normal is optimized for sun tracking
-        panel_normal = sun_vector  # Perfect sun tracking
-        panel_normal = panel_normal / np.linalg.norm(panel_normal)
-
-        cos_angle = np.dot(panel_normal, sun_vector)
-        cos_angle = np.clip(cos_angle, -1, 1)
-
-        return np.arccos(cos_angle)
-
-    def _get_time_series_factor(self, factor_array: np.ndarray, index: int, default: float) -> float:
-        """Get factor from time series array"""
-        if factor_array is None or len(factor_array) == 0:
-            return default
-        if index >= len(factor_array):
-            return factor_array[-1]  # Use last value if index out of range
-        return factor_array[index]
-
-    def calculate_energy_yield(self, power_series: np.ndarray, time_hours: np.ndarray) -> Dict:
+    def calculate_power_output(self, time: datetime,
+                             irradiance_wm2: float,
+                             temperature_K: float,
+                             degradation_factor: float = 1.0,
+                             eclipse_fraction: float = 0.0) -> PowerOutput:
         """
-        Calculate energy yield statistics
+        Calculate instantaneous power output
 
         Args:
-            power_series: Array of power outputs in Watts
-            time_hours: Array of time points in hours
+            time: Time for calculation
+            irradiance_wm2: Solar irradiance (W/m²)
+            temperature_K: Cell temperature (K)
+            degradation_factor: Overall degradation factor (0-1)
+            eclipse_fraction: Eclipse shadow fraction (0-1)
 
         Returns:
-            Dictionary with energy yield statistics
+            Power output data
         """
-        if len(power_series) == 0 or len(time_hours) == 0:
+        # Apply eclipse reduction
+        effective_irradiance = irradiance_wm2 * (1.0 - eclipse_fraction)
+
+        if effective_irradiance <= 0:
+            # No power in complete eclipse
+            return PowerOutput(
+                time=time,
+                power_watts=0.0,
+                power_density_wm2=0.0,
+                current_amps=0.0,
+                voltage_volts=0.0,
+                efficiency=0.0,
+                irradiance_wm2=irradiance_wm2,
+                temperature_K=temperature_K,
+                degradation_factor=degradation_factor,
+                eclipse_fraction=eclipse_fraction
+            )
+
+        # Calculate I-V curve
+        iv_curve = self.calculate_iv_curve(effective_irradiance, temperature_K, degradation_factor)
+
+        # Maximum power point
+        power_density = iv_curve.pmp
+        total_power = power_density * self.panel_area
+
+        # Operating voltage and current at max power
+        operating_voltage = iv_curve.vmp
+        operating_current = iv_curve.imp * self.panel_area
+
+        # Actual efficiency at current conditions
+        efficiency = (total_power / (effective_irradiance * self.panel_area)
+                     if effective_irradiance > 0 else 0.0)
+
+        return PowerOutput(
+            time=time,
+            power_watts=total_power,
+            power_density_wm2=power_density,
+            current_amps=operating_current,
+            voltage_volts=operating_voltage,
+            efficiency=efficiency,
+            irradiance_wm2=irradiance_wm2,
+            temperature_K=temperature_K,
+            degradation_factor=degradation_factor,
+            eclipse_fraction=eclipse_fraction
+        )
+
+    def calculate_power_series(self, time_series: List[datetime],
+                             irradiance_series: List[float],
+                             temperature_series: List[float],
+                             degradation_factor: float = 1.0,
+                             eclipse_fractions: Optional[List[float]] = None) -> List[PowerOutput]:
+        """
+        Calculate power output for time series
+
+        Args:
+            time_series: List of time points
+            irradiance_series: List of irradiance values (W/m²)
+            temperature_series: List of temperatures (K)
+            degradation_factor: Overall degradation factor
+            eclipse_fractions: Optional eclipse fractions
+
+        Returns:
+            List of power output data
+        """
+        if len(time_series) != len(irradiance_series) or len(time_series) != len(temperature_series):
+            raise ValueError("Input arrays must have the same length")
+
+        if eclipse_fractions is None:
+            eclipse_fractions = [0.0] * len(time_series)
+
+        power_series = []
+        for i, time in enumerate(time_series):
+            power_output = self.calculate_power_output(
+                time,
+                irradiance_series[i],
+                temperature_series[i],
+                degradation_factor,
+                eclipse_fractions[i]
+            )
+            power_series.append(power_output)
+
+        self.power_history.extend(power_series)
+        return power_series
+
+    def calculate_energy_output(self, power_series: List[PowerOutput]) -> float:
+        """
+        Calculate total energy output from power series
+
+        Args:
+            power_series: List of power output data
+
+        Returns:
+            Total energy output in Watt-hours
+        """
+        if len(power_series) < 2:
+            return 0.0
+
+        total_energy = 0.0
+        for i in range(1, len(power_series)):
+            dt = (power_series[i].time - power_series[i-1].time).total_seconds() / 3600.0  # hours
+            avg_power = (power_series[i].power_watts + power_series[i-1].power_watts) / 2.0
+            total_energy += avg_power * dt
+
+        return total_energy
+
+    def apply_degradation_to_parameters(self, radiation_damage_model: RadiationDamageModel) -> SolarCellParameters:
+        """
+        Apply degradation effects to cell parameters
+
+        Args:
+            radiation_damage_model: Radiation damage model with current state
+
+        Returns:
+            Degraded cell parameters
+        """
+        degraded_params = SolarCellParameters(
+            short_circuit_current=self.cell_params.short_circuit_current,
+            open_circuit_voltage=self.cell_params.open_circuit_voltage,
+            max_power_current=self.cell_params.max_power_current,
+            max_power_voltage=self.cell_params.max_power_voltage,
+            fill_factor=self.cell_params.fill_factor,
+            efficiency=self.cell_params.efficiency,
+            series_resistance=self.cell_params.series_resistance,
+            shunt_resistance=self.cell_params.shunt_resistance,
+            ideality_factor=self.cell_params.ideality_factor,
+            saturation_current=self.cell_params.saturation_current
+        )
+
+        # Apply radiation damage
+        damage_state = radiation_damage_model.damage_state
+        efficiency_factor = damage_state.power_efficiency_factor
+
+        # Reduce current and voltage
+        degraded_params.short_circuit_current *= efficiency_factor
+        degraded_params.open_circuit_voltage *= efficiency_factor
+        degraded_params.max_power_current *= efficiency_factor
+        degraded_params.max_power_voltage *= efficiency_factor
+        degraded_params.efficiency *= efficiency_factor
+
+        # Increase series resistance
+        degraded_params.series_resistance *= (1.0 + damage_state.series_resistance_increase / 100.0)
+
+        # Reduce fill factor
+        degraded_params.fill_factor *= efficiency_factor
+
+        return degraded_params
+
+    def get_power_statistics(self, power_series: List[PowerOutput]) -> Dict:
+        """
+        Calculate comprehensive power statistics
+
+        Args:
+            power_series: List of power output data
+
+        Returns:
+            Dictionary with power statistics
+        """
+        if not power_series:
             return {}
 
-        # Calculate energy (integrate power over time)
-        if len(time_hours) > 1:
-            dt_hours = np.diff(time_hours)
-            # Use trapezoidal integration
-            energy_wh = np.trapz(power_series, time_hours)
-        else:
-            # Single point - assume 1 hour duration
-            energy_wh = power_series[0] * 1.0
+        powers = [p.power_watts for p in power_series]
+        efficiencies = [p.efficiency for p in power_series if p.efficiency > 0]
+        temperatures = [p.temperature_K for p in power_series]
 
-        energy_kwh = energy_wh / 1000.0
+        # Time-based statistics
+        total_duration = (power_series[-1].time - power_series[0].time).total_seconds() / 3600.0
+        total_energy = self.calculate_energy_output(power_series)
+        avg_power = np.mean(powers)
+        peak_power = max(powers)
+        min_power = min(powers)
 
-        # Statistics
-        avg_power = np.mean(power_series)
-        max_power = np.max(power_series)
-        min_power = np.min(power_series)
-        total_duration = time_hours[-1] - time_hours[0] if len(time_hours) > 1 else 1.0
+        # Efficiency statistics
+        avg_efficiency = np.mean(efficiencies) if efficiencies else 0.0
+        peak_efficiency = max(efficiencies) if efficiencies else 0.0
+
+        # Temperature statistics
+        avg_temp = np.mean(temperatures)
+        max_temp = max(temperatures)
+        min_temp = min(temperatures)
+
+        # Power quality metrics
+        power_variance = np.var(powers)
+        power_cv = np.std(powers) / avg_power if avg_power > 0 else 0.0
+
+        # Eclipse statistics
+        eclipse_times = sum(1 for p in power_series if p.eclipse_fraction > 0.5)
+        eclipse_fraction = eclipse_times / len(power_series)
 
         return {
-            'total_energy_kWh': energy_kwh,
-            'average_power_W': avg_power,
-            'maximum_power_W': max_power,
-            'minimum_power_W': min_power,
-            'performance_ratio': avg_power / max_power if max_power > 0 else 0,
-            'capacity_factor': avg_power / (self.specs.area_m2 * self.specs.initial_efficiency * 1361) if max_power > 0 else 0,
-            'simulation_duration_hours': total_duration
+            'performance': {
+                'peak_power_W': peak_power,
+                'average_power_W': avg_power,
+                'minimum_power_W': min_power,
+                'total_energy_Wh': total_energy,
+                'energy_per_day_Wh': total_energy * 24.0 / total_duration if total_duration > 0 else 0.0,
+                'power_variance': power_variance,
+                'power_coefficient_of_variation': power_cv
+            },
+            'efficiency': {
+                'peak_efficiency': peak_efficiency,
+                'average_efficiency': avg_efficiency,
+                'efficiency_ratio': avg_efficiency / self.cell_params.efficiency if self.cell_params.efficiency > 0 else 0.0
+            },
+            'thermal': {
+                'average_temperature_K': avg_temp,
+                'maximum_temperature_K': max_temp,
+                'minimum_temperature_K': min_temp,
+                'temperature_range_K': max_temp - min_temp,
+                'average_temperature_C': avg_temp - 273.15
+            },
+            'eclipse': {
+                'eclipse_time_fraction': eclipse_fraction,
+                'eclipse_hours': eclipse_fraction * total_duration
+            },
+            'panel_info': {
+                'area_m2': self.panel_area,
+                'cell_type': self.cell_type,
+                'rated_efficiency': self.cell_params.efficiency
+            }
+        }
+
+    def get_power_summary_at_time(self, time: datetime,
+                                irradiance_wm2: float,
+                                temperature_K: float,
+                                degradation_factor: float = 1.0,
+                                eclipse_fraction: float = 0.0) -> Dict:
+        """
+        Get detailed power summary at specific time
+
+        Args:
+            time: Time for calculation
+            irradiance_wm2: Solar irradiance (W/m²)
+            temperature_K: Cell temperature (K)
+            degradation_factor: Overall degradation factor
+            eclipse_fraction: Eclipse shadow fraction
+
+        Returns:
+            Detailed power analysis dictionary
+        """
+        # Calculate power output
+        power_output = self.calculate_power_output(
+            time, irradiance_wm2, temperature_K, degradation_factor, eclipse_fraction
+        )
+
+        # Calculate I-V curve
+        iv_curve = self.calculate_iv_curve(
+            irradiance_wm2 * (1.0 - eclipse_fraction), temperature_K, degradation_factor
+        )
+
+        return {
+            'time': time.isoformat(),
+            'conditions': {
+                'irradiance_W_m2': irradiance_wm2,
+                'effective_irradiance_W_m2': irradiance_wm2 * (1.0 - eclipse_fraction),
+                'temperature_K': temperature_K,
+                'temperature_C': temperature_K - 273.15,
+                'eclipse_fraction': eclipse_fraction,
+                'degradation_factor': degradation_factor
+            },
+            'power_output': {
+                'total_power_W': power_output.power_watts,
+                'power_density_W_m2': power_output.power_density_wm2,
+                'voltage_V': power_output.voltage_volts,
+                'current_A': power_output.current_amps,
+                'efficiency': power_output.efficiency,
+                'efficiency_percent': power_output.efficiency * 100.0
+            },
+            'iv_curve': {
+                'open_circuit_voltage_V': iv_curve.voc,
+                'short_circuit_current_A_m2': iv_curve.isc,
+                'max_power_voltage_V': iv_curve.vmp,
+                'max_power_current_A_m2': iv_curve.imp,
+                'max_power_W_m2': iv_curve.pmp,
+                'fill_factor': iv_curve.ff,
+                'fill_factor_percent': iv_curve.ff * 100.0
+            },
+            'performance_metrics': {
+                'power_per_rated_area': power_output.power_watts / self.panel_area,
+                'efficiency_of_rated': power_output.efficiency / self.cell_params.efficiency,
+                'temperature_loss_percent': max(0, (self.cell_params.efficiency - power_output.efficiency) / self.cell_params.efficiency * 100.0),
+                'degradation_loss_percent': (1.0 - degradation_factor) * 100.0,
+                'eclipse_loss_percent': eclipse_fraction * 100.0
+            }
         }
