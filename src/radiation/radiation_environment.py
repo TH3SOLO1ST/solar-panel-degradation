@@ -1,524 +1,368 @@
 """
-Radiation Environment Module
+Radiation Environment
+=====================
 
-This module models the space radiation environment including trapped particles,
-solar particle events, and galactic cosmic rays. It implements AE8/AP8 and AP9
-models for trapped radiation and provides dose accumulation calculations.
+Models the space radiation environment including trapped particles,
+solar particle events, and galactic cosmic rays.
 
-References:
-- NASA AE8/AP8 models for trapped radiation
-- AP9/AT9 models (if available)
-- NOAA space weather data for solar particle events
-- CREME96 for cosmic ray modeling
-- "Space Radiation Environment" by Vette
+This module provides comprehensive radiation environment modeling for
+solar panel degradation calculations.
+
+Classes:
+    RadiationEnvironment: Main radiation environment class
+    TrappedParticleModel: Trapped particle flux modeling
+    SolarEventModel: Solar particle event modeling
+    CosmicRayModel: Galactic cosmic ray modeling
 """
 
 import numpy as np
-from typing import List, Tuple, Dict, Optional, Union
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-import math
-import requests
-import json
-
-try:
-    import pandas as pd
-except ImportError:
-    raise ImportError("Pandas required for data handling. Install with: pip install pandas")
-
-try:
-    from scipy import interpolate, integrate
-except ImportError:
-    raise ImportError("SciPy required for interpolation. Install with: pip install scipy")
-
-
-@dataclass
-class RadiationFlux:
-    """Radiation flux data for a specific particle type and energy"""
-    particle_type: str  # "electron", "proton", "heavy_ion"
-    energy_mev: float   # Particle energy in MeV
-    flux_particles: float  # Flux in particles/(cm²·s·sr·MeV)
-    energy_range_mev: Tuple[float, float]  # Energy range [min, max]
-
+from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass
 
 @dataclass
 class RadiationDose:
-    """Accumulated radiation dose information"""
-    dose_rads: float          # Total ionizing dose (rads)
-    dose_si: float           # Dose in SI units (Gray)
-    ddd_mev_cm2_g: float     # Displacement damage dose (MeV·cm²/g)
-    fluence_1mev_e: float    # 1 MeV electron equivalent fluence
-    time_hours: float        # Accumulation time (hours)
+    """Data structure for radiation dose information"""
+    total_ionizing_dose: float  # rads
+    non_ionizing_dose: float    # MeV cm²/g (displacement damage)
+    electron_fluence: float     # electrons/cm²
+    proton_fluence: float       # protons/cm²
+    time_points: np.ndarray     # time points in hours
+    dose_timeline: np.ndarray   # cumulative dose over time
 
+class TrappedParticleModel:
+    """Models trapped radiation belts (Van Allen belts)"""
 
-@dataclass
-class SolarParticleEvent:
-    """Solar particle event parameters"""
-    start_time: datetime
-    end_time: datetime
-    peak_flux: float         # Peak flux in particles/(cm²·s·sr)
-    energy_spectrum: List[Tuple[float, float]]  # Energy bins and fluxes
-    event_type: str         # "proton", "electron", "mixed"
-    severity: str           # "weak", "moderate", "strong", "severe"
-
-
-class RadiationEnvironment:
-    """
-    Comprehensive space radiation environment model.
-
-    Features:
-    - AE8/AP8 trapped particle models
-    - Solar particle event modeling
-    - Galactic cosmic ray modeling
-    - Real space weather data integration
-    - Shielding calculations
-    - South Atlantic Anomaly modeling
-    """
-
-    # Physical constants
-    EARTH_RADIUS = 6378.137  # km
-    PROTON_REST_MASS = 938.272  # MeV
-    ELECTRON_REST_MASS = 0.511  # MeV
-    SPEED_OF_LIGHT = 2.998e8   # m/s
-
-    # Radiation model parameters
-    SOLAR_CYCLE_PERIOD = 11.0  # years
-    MIN_SOLAR_ACTIVITY = 0.0   # dimensionless
-    MAX_SOLAR_ACTIVITY = 1.0   # dimensionless
-
-    # AE8/AP8 model coefficients (simplified for demonstration)
-    # In practice, these would be loaded from model data files
-    AE8_COEFFICIENTS = {
-        'min_flux': 1e2,      # particles/(cm²·s·sr·MeV)
-        'max_flux': 1e8,      # particles/(cm²·s·sr·MeV)
-        'peak_altitude': 30000,  # km (Van Allen belt peak)
-        'width_parameter': 5000,  # km
-    }
-    AP8_COEFFICIENTS = {
-        'min_flux': 1e1,      # particles/(cm²·s·sr·MeV)
-        'max_flux': 1e7,      # particles/(cm²·s·sr·MeV)
-        'inner_peak': 15000,  # km (inner belt)
-        'outer_peak': 25000,  # km (outer belt)
-    }
-
-    def __init__(self, use_real_data: bool = False, solar_activity: float = 0.5):
+    def __init__(self, model_type: str = "AP8"):
         """
-        Initialize radiation environment model
+        Initialize trapped particle model
 
         Args:
-            use_real_data: Use real space weather data when available
-            solar_activity: Solar activity level (0-1, 0=minimum, 1=maximum)
+            model_type: Radiation model type ("AP8", "AE8", "AP9")
         """
-        self.use_real_data = use_real_data
-        self.solar_activity = solar_activity
-        self.real_data_cache = {}
+        self.model_type = model_type
+        self.earth_radius = 6371.0  # km
 
-        # Initialize model interpolators (would load actual model data in production)
-        self._init_trapped_particle_models()
+        # Simplified model parameters (would use actual AE8/AP8 data in production)
+        self._initialize_model_parameters()
 
-    def _init_trapped_particle_models(self):
-        """Initialize trapped particle model interpolators"""
-        # Create simplified model grids for demonstration
-        # In practice, these would be loaded from official AE8/AP8 data files
+    def _initialize_model_parameters(self):
+        """Initialize simplified radiation belt parameters"""
+        # Inner radiation belt (protons)
+        self.inner_belt = {
+            'L_min': 1.2,
+            'L_max': 2.0,
+            'peak_flux': 1e4,  # protons/cm²/s
+            'peak_energy': 10,  # MeV
+            'width': 0.3
+        }
 
-        # L-shell values (Earth radii)
-        self.L_values = np.linspace(1.1, 7.0, 100)
+        # Outer radiation belt (electrons)
+        self.outer_belt = {
+            'L_min': 3.0,
+            'L_max': 7.0,
+            'peak_flux': 1e8,  # electrons/cm²/s
+            'peak_energy': 0.5,  # MeV
+            'width': 1.0
+        }
 
-        # Magnetic field values (Gauss)
-        self.B_values = np.linspace(0.1, 0.8, 50)
+        # South Atlantic Anomaly enhancement
+        self.saa_factor = 2.0  # Flux enhancement factor
 
-        # Energy values (MeV)
-        self.electron_energies = np.logspace(-1, 2, 50)  # 0.1 to 100 MeV
-        self.proton_energies = np.logspace(-1, 2, 50)    # 0.1 to 100 MeV
-
-        # Initialize flux grids (simplified models)
-        self._create_electron_flux_grid()
-        self._create_proton_flux_grid()
-
-    def _create_electron_flux_grid(self):
-        """Create electron flux grid using simplified AE8 model"""
-        self.electron_flux_grid = np.zeros((len(self.L_values),
-                                          len(self.B_values),
-                                          len(self.electron_energies)))
-
-        for i, L in enumerate(self.L_values):
-            for j, B in enumerate(self.B_values):
-                for k, E in enumerate(self.electron_energies):
-                    # Simplified AE8 flux model
-                    if 1.2 <= L <= 3.0:  # Inner belt
-                        peak_L = 2.0
-                        flux_peak = self.AE8_COEFFICIENTS['max_flux'] * np.exp(-E/1.0)
-                        spatial_factor = np.exp(-((L - peak_L)/0.5)**2) * np.exp(-B/0.3)
-                    elif 3.0 <= L <= 7.0:  # Outer belt
-                        peak_L = 4.5
-                        flux_peak = self.AE8_COEFFICIENTS['max_flux'] * 0.3 * np.exp(-E/2.0)
-                        spatial_factor = np.exp(-((L - peak_L)/1.0)**2) * np.exp(-B/0.4)
-                    else:
-                        flux_peak = self.AE8_COEFFICIENTS['min_flux']
-                        spatial_factor = 0.1
-
-                    self.electron_flux_grid[i, j, k] = flux_peak * spatial_factor
-
-    def _create_proton_flux_grid(self):
-        """Create proton flux grid using simplified AP8 model"""
-        self.proton_flux_grid = np.zeros((len(self.L_values),
-                                        len(self.B_values),
-                                        len(self.proton_energies)))
-
-        for i, L in enumerate(self.L_values):
-            for j, B in enumerate(self.B_values):
-                for k, E in enumerate(self.proton_energies):
-                    # Simplified AP8 flux model
-                    if 1.1 <= L <= 2.5:  # Inner belt
-                        peak_L = 1.8
-                        flux_peak = self.AP8_COEFFICIENTS['max_flux'] * np.exp(-E/20.0)
-                        spatial_factor = np.exp(-((L - peak_L)/0.3)**2) * np.exp(-B/0.2)
-                    elif 2.5 <= L <= 6.0:  # Outer belt (much weaker protons)
-                        peak_L = 4.0
-                        flux_peak = self.AP8_COEFFICIENTS['max_flux'] * 0.01 * np.exp(-E/10.0)
-                        spatial_factor = np.exp(-((L - peak_L)/1.2)**2) * np.exp(-B/0.3)
-                    else:
-                        flux_peak = self.AP8_COEFFICIENTS['min_flux']
-                        spatial_factor = 0.01
-
-                    self.proton_flux_grid[i, j, k] = flux_peak * spatial_factor
-
-    def calculate_trapped_particle_flux(self, position: np.ndarray, time: datetime) -> List[RadiationFlux]:
+    def calculate_l_shell(self, positions: np.ndarray) -> np.ndarray:
         """
-        Calculate trapped particle flux at given position and time
+        Calculate McIlwain L-shell parameter for positions
 
         Args:
-            position: Satellite position in ECI coordinates (km)
-            time: Time for calculation
+            positions: Nx3 array of positions in km
 
         Returns:
-            List of RadiationFlux objects for different particle types and energies
+            Array of L-shell values
         """
-        # Calculate L-shell and B-field values
-        L, B = self._calculate_magnetic_coordinates(position, time)
+        # Simplified L-shell calculation
+        # L ≈ r / cos²(λ) where r is radial distance and λ is magnetic latitude
+        r = np.linalg.norm(positions, axis=1)
+        L = r / self.earth_radius
+        return L
 
-        # Solar activity modulation
-        solar_mod = 1.0 + 0.5 * (self.solar_activity - 0.5) * np.sin(2 * np.pi * time.year / self.SOLAR_CYCLE_PERIOD)
-
-        fluxes = []
-
-        # Calculate electron fluxes
-        electron_fluxes = self._interpolate_flux_grid(L, B, self.electron_energies,
-                                                    self.electron_flux_grid) * solar_mod
-
-        for i, energy in enumerate(self.electron_energies[::5]):  # Sample every 5th energy
-            flux = electron_fluxes[i*5]
-            if flux > 1e-2:  # Only include significant fluxes
-                fluxes.append(RadiationFlux(
-                    particle_type="electron",
-                    energy_mev=energy,
-                    flux_particles=flux,
-                    energy_range_mev=(energy/2, energy*2)
-                ))
-
-        # Calculate proton fluxes
-        proton_fluxes = self._interpolate_flux_grid(L, B, self.proton_energies,
-                                                  self.proton_flux_grid) * solar_mod
-
-        for i, energy in enumerate(self.proton_energies[::5]):  # Sample every 5th energy
-            flux = proton_fluxes[i*5]
-            if flux > 1e-3:  # Only include significant fluxes
-                fluxes.append(RadiationFlux(
-                    particle_type="proton",
-                    energy_mev=energy,
-                    flux_particles=flux,
-                    energy_range_mev=(energy/2, energy*2)
-                ))
-
-        return fluxes
-
-    def _calculate_magnetic_coordinates(self, position: np.ndarray, time: datetime) -> Tuple[float, float]:
+    def get_trapped_flux(self, positions: np.ndarray, time_hours: np.ndarray,
+                        particle_type: str = 'proton') -> np.ndarray:
         """
-        Calculate magnetic L-shell and B-field coordinates
+        Get trapped particle flux for given positions
 
         Args:
-            position: Satellite position (km)
-            time: Time for calculation
+            positions: Nx3 array of positions
+            time_hours: Array of time points
+            particle_type: 'proton' or 'electron'
 
         Returns:
-            Tuple of (L_shell, B_field)
+            Array of flux values in particles/cm²/s
         """
-        # Simplified dipole model for L-shell calculation
-        r = np.linalg.norm(position)
-        lat = np.arcsin(position[2] / r)  # Magnetic latitude
+        L_values = self.calculate_l_shell(positions)
+        flux = np.zeros(len(L_values))
 
-        # L-shell approximation
-        L = r / (self.EARTH_RADIUS * np.cos(lat)**2)
+        if particle_type == 'proton':
+            # Inner belt model
+            belt = self.inner_belt
+            for i, L in enumerate(L_values):
+                if belt['L_min'] <= L <= belt['L_max']:
+                    # Gaussian-like profile
+                    flux[i] = belt['peak_flux'] * np.exp(-((L - 1.6) / belt['width'])**2)
+        elif particle_type == 'electron':
+            # Outer belt model
+            belt = self.outer_belt
+            for i, L in enumerate(L_values):
+                if belt['L_min'] <= L <= belt['L_max']:
+                    # Broader profile for electrons
+                    flux[i] = belt['peak_flux'] * np.exp(-((L - 4.5) / belt['width'])**2)
 
-        # B-field approximation (dipole)
-        B = 31100 / (L**3) * np.sqrt(1 + 3 * np.sin(lat)**2) / np.cos(lat)**6  # Gauss
+        return flux
 
-        return L, B
+class SolarEventModel:
+    """Models solar particle events (solar flares, CMEs)"""
 
-    def _interpolate_flux_grid(self, L: float, B: float, energies: np.ndarray,
-                             flux_grid: np.ndarray) -> np.ndarray:
+    def __init__(self):
+        """Initialize solar event model"""
+        # Historical solar event statistics (simplified)
+        self.event_rate = 0.5  # events per year on average
+        self.event_duration_avg = 24  # hours
+        self.event_fluence_avg = 1e9  # protons/cm²
+        self.event_energy_avg = 10  # MeV
+
+    def generate_solar_events(self, start_time: datetime, duration_days: float) -> List[Dict]:
         """
-        Interpolate flux from pre-computed grid
+        Generate synthetic solar particle events
 
         Args:
-            L: L-shell value
-            B: B-field value (Gauss)
-            energies: Energy values (MeV)
-            flux_grid: 3D flux grid [L, B, Energy]
+            start_time: Start time for simulation
+            duration_days: Duration in days
 
         Returns:
-            Interpolated flux values for each energy
+            List of solar event dictionaries
         """
-        # Ensure L and B are within grid bounds
-        L = np.clip(L, self.L_values[0], self.L_values[-1])
-        B = np.clip(B, self.B_values[0], self.B_values[-1])
+        events = []
+        n_events = np.random.poisson(self.event_rate * duration_days / 365.0)
 
-        # Create interpolator
-        interp = interpolate.RegularGridInterpolator(
-            (self.L_values, self.B_values, energies),
-            flux_grid,
-            method='linear',
-            bounds_error=False,
-            fill_value=0.0
-        )
+        for _ in range(n_events):
+            # Random event time
+            event_time = start_time + timedelta(
+                days=np.random.uniform(0, duration_days)
+            )
 
-        # Interpolate for all energies
-        points = np.column_stack([np.full_like(energies, L),
-                                 np.full_like(energies, B),
-                                 energies])
+            # Random event properties
+            duration = np.random.exponential(self.event_duration_avg)
+            fluence = np.random.exponential(self.event_fluence_avg)
+            energy = np.random.gamma(2, self.event_energy_avg / 2)
 
-        return interp(points)
+            events.append({
+                'start_time': event_time,
+                'duration_hours': duration,
+                'fluence': fluence,
+                'energy_MeV': energy,
+                'peak_flux': fluence / (duration * 3600)  # particles/cm²/s
+            })
 
-    def calculate_solar_particle_event_flux(self, time: datetime, position: np.ndarray) -> List[RadiationFlux]:
+        return events
+
+    def get_event_flux(self, time_hours: np.ndarray, events: List[Dict]) -> np.ndarray:
         """
-        Calculate solar particle event flux at given time and position
+        Calculate solar event flux over time
 
         Args:
-            time: Time for calculation
-            position: Satellite position (km)
+            time_hours: Array of time points in hours
+            events: List of solar event dictionaries
 
         Returns:
-            List of RadiationFlux objects for solar particles
+            Array of flux values in particles/cm²/s
         """
-        if self.use_real_data:
-            return self._get_real_spe_data(time, position)
-        else:
-            return self._generate_synthetic_spe(time, position)
+        flux = np.zeros(len(time_hours))
 
-    def _get_real_spe_data(self, time: datetime, position: np.ndarray) -> List[RadiationFlux]:
-        """Get real solar particle event data from space weather APIs"""
-        # This would connect to NOAA GOES or other space weather data sources
-        # For demonstration, return empty flux (no SPE)
-        return []
+        for event in events:
+            event_start = (event['start_time'] - datetime(2000, 1, 1)).total_seconds() / 3600
+            event_end = event_start + event['duration_hours']
 
-    def _generate_synthetic_spe(self, time: datetime, position: np.ndarray) -> List[RadiationFlux]:
-        """Generate synthetic solar particle event data"""
-        # Simple SPE probability model based on solar activity
-        spe_probability = self.solar_activity * 0.1  # Max 10% chance per day
+            # Find time points during event
+            mask = (time_hours >= event_start) & (time_hours <= event_end)
 
-        if np.random.random() > spe_probability:
-            return []
+            # Simple rectangular profile (would be more realistic with time evolution)
+            flux[mask] += event['peak_flux']
 
-        # Generate synthetic SPE parameters
-        if self.solar_activity > 0.7:
-            severity = "severe"
-            peak_flux = 1e5
-        elif self.solar_activity > 0.4:
-            severity = "strong"
-            peak_flux = 1e4
-        else:
-            severity = "moderate"
-            peak_flux = 1e3
+        return flux
 
-        # Create energy spectrum (power law)
-        energies = np.logspace(0, 2, 20)  # 1 to 100 MeV
-        spectral_index = -3.0  # Typical for solar protons
+class CosmicRayModel:
+    """Models galactic cosmic ray radiation"""
 
-        fluxes = []
-        for energy in energies:
-            flux = peak_flux * (energy/10.0)**spectral_index
-            fluxes.append(RadiationFlux(
-                particle_type="proton",
-                energy_mev=energy,
-                flux_particles=flux,
-                energy_range_mev=(energy/np.sqrt(2), energy*np.sqrt(2))
-            ))
+    def __init__(self):
+        """Initialize cosmic ray model"""
+        # GCR flux parameters (simplified)
+        self.base_flux = 1e2  # particles/cm²/s (high energy)
+        self.solar_modulation = True  # Include solar cycle effects
 
-        return fluxes
-
-    def calculate_gcr_flux(self, time: datetime, position: np.ndarray) -> List[RadiationFlux]:
+    def get_gcr_flux(self, time_hours: np.ndarray) -> np.ndarray:
         """
         Calculate galactic cosmic ray flux
 
         Args:
-            time: Time for calculation
-            position: Satellite position (km)
+            time_hours: Array of time points in hours
 
         Returns:
-            List of RadiationFlux objects for GCR particles
+            Array of GCR flux values in particles/cm²/s
         """
-        # GCR flux is inversely related to solar activity
-        gcr_modulation = 1.0 - 0.7 * self.solar_activity
+        flux = np.ones(len(time_hours)) * self.base_flux
 
-        # Simplified GCR spectrum (power law)
-        energies = np.logspace(2, 4, 10)  # 100 MeV to 10 GeV
+        if self.solar_modulation:
+            # Simple solar cycle modulation (11-year cycle)
+            solar_phase = 2 * np.pi * time_hours / (11 * 365 * 24)
+            modulation = 1 - 0.3 * np.sin(solar_phase)
+            flux *= modulation
 
-        fluxes = []
-        for energy in energies:
-            if energy < 1000:  # Protons up to 1 GeV
-                flux = 1.0 * gcr_modulation * (energy/100.0)**-2.7
-                fluxes.append(RadiationFlux(
-                    particle_type="proton",
-                    energy_mev=energy,
-                    flux_particles=flux,
-                    energy_range_mev=(energy/2, energy*2)
-                ))
+        return flux
 
-        return fluxes
+class RadiationEnvironment:
+    """Main radiation environment class"""
 
-    def calculate_radiation_dose(self, fluxes: List[RadiationFlux],
-                               shielding_thickness_cm: float = 0.1,
-                               exposure_time_hours: float = 1.0) -> RadiationDose:
+    def __init__(self, model_type: str = "AP8"):
         """
-        Calculate accumulated radiation dose from fluxes
+        Initialize radiation environment
 
         Args:
-            fluxes: List of radiation fluxes
-            shielding_thickness_cm: Shielding thickness in cm
-            exposure_time_hours: Exposure duration in hours
+            model_type: Radiation model type
+        """
+        self.trapped_model = TrappedParticleModel(model_type)
+        self.solar_model = SolarEventModel()
+        self.gcr_model = CosmicRayModel()
+
+    def calculate_radiation_dose(self, positions: np.ndarray, time_hours: np.ndarray,
+                                shielding_thickness_mm: float = 1.0) -> RadiationDose:
+        """
+        Calculate cumulative radiation dose for satellite trajectory
+
+        Args:
+            positions: Nx3 array of satellite positions
+            time_hours: Array of time points
+            shielding_thickness_mm: Thickness of shielding material in mm
 
         Returns:
             RadiationDose object with dose information
         """
-        total_dose_rads = 0.0
-        total_ddd = 0.0
-        total_fluence_1mev_e = 0.0
+        # Get trapped particle fluxes
+        proton_flux = self.trapped_model.get_trapped_flux(positions, time_hours, 'proton')
+        electron_flux = self.trapped_model.get_trapped_flux(positions, time_hours, 'electron')
 
-        for flux in fluxes:
-            # Apply shielding attenuation
-            transmission = self._calculate_shielding_transmission(
-                flux.particle_type, flux.energy_mev, shielding_thickness_cm
-            )
+        # Generate solar events
+        start_time = datetime(2000, 1, 1)  # Reference time
+        duration_days = time_hours[-1] / 24.0
+        solar_events = self.solar_model.generate_solar_events(start_time, duration_days)
 
-            attenuated_flux = flux.flux_particles * transmission
+        # Get solar event flux
+        solar_flux = self.solar_model.get_event_flux(time_hours, solar_events)
 
-            # Calculate dose rate (simplified)
-            if flux.particle_type == "electron":
-                # Electrons: dose rate ≈ flux × energy × stopping power
-                dose_rate = attenuated_flux * flux.energy_mev * 1.6e-8  # rad/s
-                ddd_contribution = attenuated_flux * flux.energy_mev * 1e-6  # MeV·cm²/g
+        # Get GCR flux
+        gcr_flux = self.gcr_model.get_gcr_flux(time_hours)
 
-                # 1 MeV electron equivalent
-                if abs(flux.energy_mev - 1.0) < 0.5:
-                    total_fluence_1mev_e += attenuated_flux * exposure_time_hours * 3600
+        # Calculate cumulative fluences
+        time_step_hours = time_hours[1] - time_hours[0] if len(time_hours) > 1 else 1.0
+        time_step_seconds = time_step_hours * 3600
 
-            elif flux.particle_type == "proton":
-                # Protons: higher damage potential
-                dose_rate = attenuated_flux * flux.energy_mev * 1.6e-7  # rad/s
-                ddd_contribution = attenuated_flux * flux.energy_mev * 1e-5  # MeV·cm²/g
+        total_proton_fluence = np.sum((proton_flux + solar_flux) * time_step_seconds)
+        total_electron_fluence = np.sum(electron_flux * time_step_seconds)
 
-                # 1 MeV electron equivalent (NIEL scaling)
-                niel_factor = (flux.energy_mev / 1.0)**0.8  # Simplified NIEL scaling
-                total_fluence_1mev_e += attenuated_flux * niel_factor * exposure_time_hours * 3600
-            else:
-                continue
-
-            total_dose_rads += dose_rate * exposure_time_hours * 3600
-            total_ddd += ddd_contribution * exposure_time_hours * 3600
-
-        return RadiationDose(
-            dose_rads=total_dose_rads,
-            dose_si=total_dose_rads * 0.01,  # Convert rad to Gray
-            ddd_mev_cm2_g=total_ddd,
-            fluence_1mev_e=total_fluence_1mev_e,
-            time_hours=exposure_time_hours
+        # Calculate doses
+        # Simplified dose calculation (would use more complex NIEL calculations)
+        ionizing_dose = self._calculate_ionizing_dose(
+            total_proton_fluence, total_electron_fluence, shielding_thickness_mm
+        )
+        non_ionizing_dose = self._calculate_displacement_damage(
+            total_proton_fluence, shielding_thickness_mm
         )
 
-    def _calculate_shielding_transmission(self, particle_type: str,
-                                        energy_mev: float,
-                                        thickness_cm: float) -> float:
+        # Create timeline of cumulative dose
+        cumulative_dose = np.zeros(len(time_hours))
+        for i in range(1, len(time_hours)):
+            dose_increment = self._calculate_step_dose(
+                proton_flux[i], electron_flux[i], solar_flux[i], gcr_flux[i],
+                time_step_seconds, shielding_thickness_mm
+            )
+            cumulative_dose[i] = cumulative_dose[i-1] + dose_increment
+
+        return RadiationDose(
+            total_ionizing_dose=ionizing_dose,
+            non_ionizing_dose=non_ionizing_dose,
+            electron_fluence=total_electron_fluence,
+            proton_fluence=total_proton_fluence,
+            time_points=time_hours,
+            dose_timeline=cumulative_dose
+        )
+
+    def _calculate_ionizing_dose(self, proton_fluence: float, electron_fluence: float,
+                               shielding_mm: float) -> float:
         """
-        Calculate transmission through shielding material
+        Calculate ionizing radiation dose
 
         Args:
-            particle_type: Type of particle ("electron" or "proton")
-            energy_mev: Particle energy in MeV
-            thickness_cm: Shielding thickness in cm
+            proton_fluence: Proton fluence in protons/cm²
+            electron_fluence: Electron fluence in electrons/cm²
+            shielding_mm: Shielding thickness in mm
 
         Returns:
-            Transmission fraction (0-1)
+            Ionizing dose in rads
         """
-        # Simplified shielding model (aluminum)
-        density_al = 2.7  # g/cm³
+        # Simplified calculation (would use actual stopping power data)
+        proton_dose_coefficient = 1e-4  # rads per proton/cm² (1 MeV equivalent)
+        electron_dose_coefficient = 1e-7  # rads per electron/cm²
 
-        if particle_type == "electron":
-            # Electron range in aluminum (approximate)
-            if energy_mev < 0.5:
-                range_cm = 0.05 * (energy_mev / 0.5)**2
-            else:
-                range_cm = 0.05 + 0.4 * (energy_mev - 0.5)
-        else:  # proton
-            # Proton range in aluminum (approximate)
-            if energy_mev < 10:
-                range_cm = 0.01 * (energy_mev / 10)**2
-            else:
-                range_cm = 0.01 + 0.1 * (energy_mev - 10)
+        # Shielding attenuation (exponential)
+        shielding_factor = np.exp(-shielding_mm / 10.0)  # 10 mm attenuation length
 
-        # Transmission probability
-        if thickness_cm >= range_cm:
-            return 0.0
-        else:
-            return np.exp(-thickness_cm / range_cm)
+        dose = (proton_fluence * proton_dose_coefficient +
+                electron_fluence * electron_dose_coefficient) * shielding_factor
 
-    def get_radiation_environment_summary(self, position: np.ndarray,
-                                        time: datetime,
-                                        duration_hours: float = 24.0) -> Dict:
+        return dose
+
+    def _calculate_displacement_damage(self, proton_fluence: float,
+                                     shielding_mm: float) -> float:
         """
-        Get comprehensive radiation environment summary
+        Calculate non-ionizing energy loss (displacement damage)
 
         Args:
-            position: Satellite position (km)
-            time: Starting time
-            duration_hours: Duration for analysis (hours)
+            proton_fluence: Proton fluence in protons/cm²
+            shielding_mm: Shielding thickness in mm
 
         Returns:
-            Dictionary with comprehensive radiation environment data
+            Displacement damage dose in MeV cm²/g
         """
-        # Calculate all radiation sources
-        trapped_fluxes = self.calculate_trapped_particle_flux(position, time)
-        spe_fluxes = self.calculate_solar_particle_event_flux(position, time)
-        gcr_fluxes = self.calculate_gcr_flux(position, time)
+        # NIEL coefficient for 1 MeV protons in silicon
+        niel_coefficient = 4e-3  # MeV cm²/g per proton/cm²
 
-        all_fluxes = trapped_fluxes + spe_fluxes + gcr_fluxes
+        # Shielding attenuation
+        shielding_factor = np.exp(-shielding_mm / 15.0)  # 15 mm attenuation length
 
-        # Calculate doses for different shielding levels
-        shielding_levels = [0.01, 0.1, 0.5, 1.0]  # cm
-        doses = {}
+        damage_dose = proton_fluence * niel_coefficient * shielding_factor
 
-        for thickness in shielding_levels:
-            dose = self.calculate_radiation_dose(all_fluxes, thickness, duration_hours)
-            doses[f"{thickness*10:.0f}mm"] = dose
+        return damage_dose
 
-        # Calculate magnetic coordinates
-        L, B = self._calculate_magnetic_coordinates(position, time)
+    def _calculate_step_dose(self, proton_flux: float, electron_flux: float,
+                           solar_flux: float, gcr_flux: float,
+                           time_step_seconds: float, shielding_mm: float) -> float:
+        """
+        Calculate dose for a single time step
 
-        return {
-            'position': position.tolist(),
-            'time': time.isoformat(),
-            'duration_hours': duration_hours,
-            'magnetic_coordinates': {'L_shell': L, 'B_field_gauss': B},
-            'trapped_particle_count': len(trapped_fluxes),
-            'spe_active': len(spe_fluxes) > 0,
-            'gcr_count': len(gcr_fluxes),
-            'total_particle_count': len(all_fluxes),
-            'doses_by_shielding': {
-                thickness: {
-                    'dose_rads': dose.dose_rads,
-                    'dose_si': dose.dose_si,
-                    'ddd_mev_cm2_g': dose.ddd_mev_cm2_g,
-                    'fluence_1mev_e': dose.fluence_1mev_e
-                }
-                for thickness, dose in doses.items()
-            },
-            'solar_activity': self.solar_activity
-        }
+        Args:
+            proton_flux: Proton flux in particles/cm²/s
+            electron_flux: Electron flux in particles/cm²/s
+            solar_flux: Solar event flux in particles/cm²/s
+            gcr_flux: GCR flux in particles/cm²/s
+            time_step_seconds: Time step in seconds
+            shielding_mm: Shielding thickness in mm
+
+        Returns:
+            Dose increment in rads
+        """
+        total_proton_flux = proton_flux + solar_flux + gcr_flux
+        total_electron_flux = electron_flux
+
+        # Fluences for this time step
+        proton_fluence = total_proton_flux * time_step_seconds
+        electron_fluence = total_electron_flux * time_step_seconds
+
+        return self._calculate_ionizing_dose(proton_fluence, electron_fluence, shielding_mm)

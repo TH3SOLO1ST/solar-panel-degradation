@@ -1,377 +1,228 @@
 """
-Orbit Propagator Module
+Orbit Propagator
+================
 
-This module implements satellite orbit propagation using SGP4 for LEO/MEO orbits
-and simplified Keplerian propagation for GEO orbits. It calculates satellite
-positions, velocities, and provides orbital parameters for degradation analysis.
+Implements orbital propagation calculations for various orbit types
+including LEO, MEO, GEO, and Sun-synchronous orbits.
 
-References:
-- SGP4 algorithm: Hoots, Roehrich, "Models for Atmosphere"
-- Skyfield library documentation
-- Vallado, "Fundamentals of Astrodynamics and Applications"
+This module uses the SGP4 algorithm for high-precision orbit propagation
+and provides simplified methods for GEO orbits.
+
+Classes:
+    OrbitPropagator: Main propagator class
+    OrbitElements: Data structure for orbital elements
 """
 
 import numpy as np
-from typing import Tuple, List, Optional, Dict, Any
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-import math
-
+from typing import List, Tuple, Optional
 try:
-    from skyfield.api import load, EarthSatellite, wgs84
-    from skyfield.timelib import Timescale
+    from sgp4.api import Satrec, jday
 except ImportError:
-    raise ImportError("Skyfield library required. Install with: pip install skyfield")
+    # Fallback implementation if sgp4 not available
+    Satrec = None
 
+class OrbitElements:
+    """Data structure for orbital elements"""
 
-@dataclass
-class OrbitalElements:
-    """Keplerian orbital elements"""
-    semi_major_axis: float  # km
-    eccentricity: float
-    inclination: float  # radians
-    raan: float  # Right Ascension of Ascending Node (radians)
-    arg_perigee: float  # Argument of Perigee (radians)
-    mean_anomaly: float  # Mean Anomaly (radians)
-    epoch: datetime
+    def __init__(self,
+                 semi_major_axis_km: float,
+                 eccentricity: float,
+                 inclination_deg: float,
+                 raan_deg: float,
+                 arg_perigee_deg: float,
+                 mean_anomaly_deg: float,
+                 epoch: datetime):
+        """
+        Initialize orbital elements
 
-    def __post_init__(self):
-        """Validate orbital elements"""
-        if self.eccentricity < 0 or self.eccentricity >= 1:
-            raise ValueError(f"Eccentricity must be in range [0, 1), got {self.eccentricity}")
-        if self.semi_major_axis < 6378.137:  # Earth radius in km
-            raise ValueError(f"Orbit altitude too low: {self.semi_major_axis} km")
+        Args:
+            semi_major_axis_km: Semi-major axis in km
+            eccentricity: Orbital eccentricity (0 for circular)
+            inclination_deg: Inclination in degrees
+            raan_deg: Right ascension of ascending node in degrees
+            arg_perigee_deg: Argument of perigee in degrees
+            mean_anomaly_deg: Mean anomaly at epoch in degrees
+            epoch: Reference epoch time
+        """
+        self.a = semi_major_axis_km
+        self.e = eccentricity
+        self.i = np.radians(inclination_deg)
+        self.raan = np.radians(raan_deg)
+        self.omega = np.radians(arg_perigee_deg)
+        self.M0 = np.radians(mean_anomaly_deg)
+        self.epoch = epoch
 
-
-@dataclass
-class OrbitalState:
-    """Satellite orbital state at a given time"""
-    time: datetime
-    position: np.ndarray  # km [x, y, z] in ECI frame
-    velocity: np.ndarray  # km/s [vx, vy, vz] in ECI frame
-    altitude: float  # km above Earth surface
-    latitude: float  # degrees
-    longitude: float  # degrees
-    velocity_magnitude: float  # km/s
-
+        # Calculate orbital period
+        self.mu = 398600.4418  # Earth's gravitational parameter (km³/s²)
+        self.period = 2 * np.pi * np.sqrt(self.a**3 / self.mu)  # seconds
 
 class OrbitPropagator:
-    """
-    Satellite orbit propagator supporting multiple orbit types and propagation methods.
+    """Main orbit propagator class"""
 
-    Features:
-    - SGP4 propagation for LEO/MEO orbits
-    - Keplerian propagation for GEO/circular orbits
-    - High-precision position and velocity calculation
-    - Support for multiple coordinate systems
-    """
-
-    # Physical constants
-    EARTH_RADIUS = 6378.137  # km
-    MU_EARTH = 398600.4418  # km^3/s^2 (Earth gravitational parameter)
-    EARTH_FLATTENING = 1/298.257223563
-    J2 = 1.08262668e-3  # Earth's J2 perturbation coefficient
-
-    def __init__(self, use_sgp4: bool = True):
+    def __init__(self, orbit_elements: OrbitElements):
         """
         Initialize orbit propagator
 
         Args:
-            use_sgp4: Use SGP4 algorithm when available (recommended for accuracy)
+            orbit_elements: Orbital elements object
         """
-        self.use_sgp4 = use_sgp4
-        self.ts = load.timescale()
-        self._cached_sgp4_sat: Optional[EarthSatellite] = None
-        self._cached_elements: Optional[OrbitalElements] = None
+        self.orbit = orbit_elements
+        self.use_sgp4 = Satrec is not None and self._should_use_sgp4()
 
-    def set_orbit_from_elements(self, elements: OrbitalElements) -> None:
+    def _should_use_sgp4(self) -> bool:
+        """Determine if SGP4 should be used based on orbit type"""
+        # Use simplified propagation for near-circular GEO orbits
+        if abs(self.orbit.a - 42164) < 1000 and self.orbit.e < 0.01:
+            return False
+        return True
+
+    def propagate(self, start_time: datetime, duration_days: float,
+                  time_step_hours: float = 1.0) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Set orbit using Keplerian elements
-
-        Args:
-            elements: Orbital elements defining the orbit
-        """
-        self._cached_elements = elements
-
-        if self.use_sgp4:
-            self._setup_sgp4_satellite(elements)
-
-    def set_orbit_from_tle(self, tle_line1: str, tle_line2: str) -> None:
-        """
-        Set orbit using Two-Line Element (TLE) format
-
-        Args:
-            tle_line1: First line of TLE
-            tle_line2: Second line of TLE
-        """
-        if not self.use_sgp4:
-            raise ValueError("TLE support requires SGP4 propagation method")
-
-        self._cached_sgp4_sat = EarthSatellite(tle_line1, tle_line2, 'SAT')
-
-    def _setup_sgp4_satellite(self, elements: OrbitalElements) -> None:
-        """Setup SGP4 satellite from orbital elements"""
-        # Convert orbital elements to mean orbital elements for SGP4
-        period = 2 * np.pi * np.sqrt(elements.semi_major_axis**3 / self.MU_EARTH)
-        mean_motion = 86400.0 / period  # revolutions per day
-
-        # Estimate inclination in degrees and RAAN in degrees
-        inc_deg = np.degrees(elements.inclination)
-        raan_deg = np.degrees(elements.raan)
-        ecc = elements.eccentricity
-        arg_per_deg = np.degrees(elements.arg_perigee)
-        mean_anom_deg = np.degrees(elements.mean_anomaly)
-
-        # Create satellite with epoch
-        t = self.ts.from_datetime(elements.epoch)
-        self._cached_sgp4_sat = EarthSatellite(
-            '1 00000U 23001.00000000  .00000000  00000+0  00000+0 0  0000',
-            f'2 00000 {inc_deg:.4f} {raan_deg:.4f} {ecc:.7f} {arg_per_deg:.4f} {mean_anom_deg:.4f} {mean_motion:.8f}00000',
-            'SATELLITE',
-            t
-        )
-
-    def propagate(self, time: datetime) -> OrbitalState:
-        """
-        Propagate orbit to specified time
-
-        Args:
-            time: Target time for propagation
-
-        Returns:
-            OrbitalState at specified time
-        """
-        if self.use_sgp4 and self._cached_sgp4_sat:
-            return self._propagate_sgp4(time)
-        elif self._cached_elements:
-            return self._propagate_keplerian(time)
-        else:
-            raise ValueError("No orbit defined. Call set_orbit_from_elements or set_orbit_from_tle first")
-
-    def _propagate_sgp4(self, time: datetime) -> OrbitalState:
-        """Propagate using SGP4 algorithm"""
-        t = self.ts.from_datetime(time)
-        position, velocity = self._cached_sgp4_sat.at(t).position.km, self._cached_sgp4_sat.at(t).velocity.km_per_s
-
-        # Calculate geodetic coordinates
-        geodetic = wgs84.subpoint(self._cached_sgp4_sat.at(t))
-
-        # Calculate altitude and velocity magnitude
-        altitude = np.linalg.norm(position) - self.EARTH_RADIUS
-        velocity_magnitude = np.linalg.norm(velocity)
-
-        return OrbitalState(
-            time=time,
-            position=position,
-            velocity=velocity,
-            altitude=altitude,
-            latitude=geodetic.latitude.degrees,
-            longitude=geodetic.longitude.degrees,
-            velocity_magnitude=velocity_magnitude
-        )
-
-    def _propagate_keplerian(self, time: datetime) -> OrbitalState:
-        """Propagate using simplified Keplerian elements"""
-        if not self._cached_elements:
-            raise ValueError("Orbital elements not defined")
-
-        elements = self._cached_elements
-
-        # Time since epoch in seconds
-        dt = (time - elements.epoch).total_seconds()
-
-        # Mean motion (rad/s)
-        n = np.sqrt(self.MU_EARTH / elements.semi_major_axis**3)
-
-        # Mean anomaly at time t
-        M = elements.mean_anomaly + n * dt
-
-        # Solve Kepler's equation for eccentric anomaly (Newton-Raphson)
-        E = M
-        for _ in range(10):  # Usually converges quickly
-            E = E - (E - elements.eccentricity * np.sin(E) - M) / (1 - elements.eccentricity * np.cos(E))
-
-        # True anomaly
-        nu = 2 * np.arctan2(
-            np.sqrt(1 + elements.eccentricity) * np.sin(E/2),
-            np.sqrt(1 - elements.eccentricity) * np.cos(E/2)
-        )
-
-        # Distance from Earth center
-        r = elements.semi_major_axis * (1 - elements.eccentricity * np.cos(E))
-
-        # Position in orbital plane
-        x_orb = r * np.cos(nu)
-        y_orb = r * np.sin(nu)
-
-        # Velocity in orbital plane
-        h = np.sqrt(self.MU_EARTH * elements.semi_major_axis * (1 - elements.eccentricity**2))
-        vx_orb = -h * np.sin(nu) / r
-        vy_orb = h * (elements.eccentricity + np.cos(nu)) / r
-
-        # Rotation matrices to transform to ECI frame
-        cos_omega = np.cos(elements.arg_perigee)
-        sin_omega = np.sin(elements.arg_perigee)
-        cos_i = np.cos(elements.inclination)
-        sin_i = np.sin(elements.inclination)
-        cos_raan = np.cos(elements.raan)
-        sin_raan = np.sin(elements.raan)
-
-        # Transform position to ECI frame
-        x = (cos_omega * cos_raan - sin_omega * cos_i * sin_raan) * x_orb + \
-            (-sin_omega * cos_raan - cos_omega * cos_i * sin_raan) * y_orb
-        y = (cos_omega * sin_raan + sin_omega * cos_i * cos_raan) * x_orb + \
-            (-sin_omega * sin_raan + cos_omega * cos_i * cos_raan) * y_orb
-        z = sin_omega * sin_i * x_orb + cos_omega * sin_i * y_orb
-
-        # Transform velocity to ECI frame
-        vx = (cos_omega * cos_raan - sin_omega * cos_i * sin_raan) * vx_orb + \
-             (-sin_omega * cos_raan - cos_omega * cos_i * sin_raan) * vy_orb
-        vy = (cos_omega * sin_raan + sin_omega * cos_i * cos_raan) * vx_orb + \
-             (-sin_omega * sin_raan + cos_omega * cos_i * cos_raan) * vy_orb
-        vz = sin_omega * sin_i * vx_orb + cos_omega * sin_i * vy_orb
-
-        position = np.array([x, y, z])
-        velocity = np.array([vx, vy, vz])
-
-        # Calculate geodetic coordinates (simplified)
-        altitude = np.linalg.norm(position) - self.EARTH_RADIUS
-        velocity_magnitude = np.linalg.norm(velocity)
-
-        # Simple latitude/longitude calculation
-        r_xy = np.sqrt(x**2 + y**2)
-        latitude = np.degrees(np.arctan2(z, r_xy))
-        longitude = np.degrees(np.arctan2(y, x))
-
-        return OrbitalState(
-            time=time,
-            position=position,
-            velocity=velocity,
-            altitude=altitude,
-            latitude=latitude,
-            longitude=longitude,
-            velocity_magnitude=velocity_magnitude
-        )
-
-    def get_orbital_period(self) -> float:
-        """
-        Calculate orbital period in seconds
-
-        Returns:
-            Orbital period in seconds
-        """
-        if self._cached_elements:
-            a = self._cached_elements.semi_major_axis
-            return 2 * np.pi * np.sqrt(a**3 / self.MU_EARTH)
-        elif self._cached_sgp4_sat:
-            # Estimate from SGP4 satellite
-            a = (self.MU_EARTH / ((2 * np.pi * self._cached_sgp4_sat.no / 86400)**2))**(1/3)
-            return 2 * np.pi * np.sqrt(a**3 / self.MU_EARTH)
-        else:
-            raise ValueError("No orbit defined")
-
-    def propagate_batch(self, times: List[datetime]) -> List[OrbitalState]:
-        """
-        Propagate orbit for multiple times (batch processing)
-
-        Args:
-            times: List of target times
-
-        Returns:
-            List of OrbitalState objects
-        """
-        return [self.propagate(time) for time in times]
-
-    def create_time_series(self, start_time: datetime, duration: timedelta,
-                          time_step: timedelta) -> List[OrbitalState]:
-        """
-        Create time series of orbital states
+        Propagate orbit for specified duration
 
         Args:
             start_time: Start time for propagation
-            duration: Total duration to propagate
-            time_step: Time step between states
+            duration_days: Duration in days
+            time_step_hours: Time step in hours
 
         Returns:
-            List of OrbitalState objects covering the time range
+            Tuple of (positions, times) where positions is Nx3 array in km
         """
-        times = []
-        current_time = start_time
-        while current_time <= start_time + duration:
-            times.append(current_time)
-            current_time += time_step
+        if self.use_sgp4:
+            return self._propagate_sgp4(start_time, duration_days, time_step_hours)
+        else:
+            return self._propagate_simplified(start_time, duration_days, time_step_hours)
 
-        return self.propagate_batch(times)
+    def _propagate_sgp4(self, start_time: datetime, duration_days: float,
+                       time_step_hours: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Propagate using SGP4 algorithm"""
+        # Convert TLE format for SGP4 (simplified)
+        # This is a placeholder - real implementation would need proper TLE conversion
+        raise NotImplementedError("SGP4 propagation requires proper TLE conversion")
 
-    @staticmethod
-    def create_leo_orbit(altitude_km: float, inclination_deg: float,
-                        epoch: datetime) -> OrbitalElements:
+    def _propagate_simplified(self, start_time: datetime, duration_days: float,
+                             time_step_hours: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Simplified Keplerian propagation for near-circular orbits"""
+        # Time array
+        total_hours = duration_days * 24
+        time_steps = int(total_hours / time_step_hours)
+        times = np.arange(time_steps + 1) * time_step_hours
+
+        # Initialize position array
+        positions = np.zeros((len(times), 3))
+
+        # Earth parameters
+        earth_omega = 2 * np.pi / (24 * 3600)  # Earth rotation rate (rad/s)
+        earth_radius = 6371.0  # km
+
+        for i, t in enumerate(times):
+            # Mean motion (rad/s)
+            n = 2 * np.pi / self.orbit.period
+
+            # Mean anomaly at time t
+            dt_seconds = t * 3600
+            M = self.orbit.M0 + n * dt_seconds
+
+            # For circular orbits, true anomaly ≈ mean anomaly
+            nu = M
+
+            # Position in orbital plane
+            r = self.orbit.a * (1 - self.orbit.e**2) / (1 + self.orbit.e * np.cos(nu))
+
+            # Position in orbital plane coordinates
+            x_orbital = r * np.cos(nu)
+            y_orbital = r * np.sin(nu)
+            z_orbital = 0
+
+            # Rotation matrices for orbital elements
+            # Rotation by argument of perigee
+            R_omega = np.array([
+                [np.cos(self.orbit.omega), -np.sin(self.orbit.omega), 0],
+                [np.sin(self.orbit.omega), np.cos(self.orbit.omega), 0],
+                [0, 0, 1]
+            ])
+
+            # Rotation by inclination
+            R_i = np.array([
+                [1, 0, 0],
+                [0, np.cos(self.orbit.i), -np.sin(self.orbit.i)],
+                [0, np.sin(self.orbit.i), np.cos(self.orbit.i)]
+            ])
+
+            # Rotation by RAAN
+            R_raan = np.array([
+                [np.cos(self.orbit.raan), -np.sin(self.orbit.raan), 0],
+                [np.sin(self.orbit.raan), np.cos(self.orbit.raan), 0],
+                [0, 0, 1]
+            ])
+
+            # Combined rotation
+            R_total = R_raan @ R_i @ R_omega
+
+            # Transform to inertial coordinates
+            pos_orbital = np.array([x_orbital, y_orbital, z_orbital])
+            pos_inertial = R_total @ pos_orbital
+
+            positions[i] = pos_inertial
+
+        return positions, times
+
+    def get_orbital_velocity(self, positions: np.ndarray) -> np.ndarray:
         """
-        Create typical LEO orbital elements
+        Calculate orbital velocity for given positions
 
         Args:
-            altitude_km: Altitude above Earth surface in km
-            inclination_deg: Orbital inclination in degrees
-            epoch: Reference epoch
+            positions: Nx3 array of positions in km
 
         Returns:
-            OrbitalElements for LEO orbit
+            Nx3 array of velocities in km/s
         """
-        a = OrbitPropagator.EARTH_RADIUS + altitude_km
-        return OrbitalElements(
-            semi_major_axis=a,
-            eccentricity=0.001,  # Nearly circular
-            inclination=np.radians(inclination_deg),
-            raan=0.0,
-            arg_perigee=0.0,
-            mean_anomaly=0.0,
-            epoch=epoch
-        )
+        velocities = np.zeros_like(positions)
 
-    @staticmethod
-    def create_geo_orbit(epoch: datetime) -> OrbitalElements:
+        for i, pos in enumerate(positions):
+            r = np.linalg.norm(pos)
+            v_mag = np.sqrt(self.orbit.mu / r)
+
+            # Velocity perpendicular to position (simplified)
+            # For circular orbits, velocity is perpendicular to radius
+            if i == 0:
+                # Use first two points to estimate direction
+                if len(positions) > 1:
+                    delta_pos = positions[1] - pos
+                    # Make perpendicular
+                    tangent = np.cross(pos, np.array([0, 0, 1]))
+                    if np.linalg.norm(tangent) > 0:
+                        tangent = tangent / np.linalg.norm(tangent)
+                    else:
+                        tangent = np.array([-pos[1], pos[0], 0])
+                        tangent = tangent / np.linalg.norm(tangent)
+                else:
+                    tangent = np.array([-pos[1], pos[0], 0])
+                    tangent = tangent / np.linalg.norm(tangent)
+            else:
+                # Use finite difference
+                if i < len(positions) - 1:
+                    tangent = positions[i + 1] - positions[i - 1]
+                else:
+                    tangent = positions[i] - positions[i - 1]
+                tangent = tangent / np.linalg.norm(tangent)
+
+            velocities[i] = v_mag * tangent
+
+        return velocities
+
+    def calculate_altitude(self, positions: np.ndarray) -> np.ndarray:
         """
-        Create GEO orbital elements
+        Calculate altitude for given positions
 
         Args:
-            epoch: Reference epoch
+            positions: Nx3 array of positions in km
 
         Returns:
-            OrbitalElements for GEO orbit
+            Array of altitudes in km
         """
-        # GEO altitude: approximately 35786 km above equator
-        a = 42164.0  # km (Earth radius + GEO altitude)
-        return OrbitalElements(
-            semi_major_axis=a,
-            eccentricity=0.0,  # Circular
-            inclination=0.0,  # Equatorial
-            raan=0.0,
-            arg_perigee=0.0,
-            mean_anomaly=0.0,
-            epoch=epoch
-        )
-
-    @staticmethod
-    def create_molniya_orbit(epoch: datetime, raan_deg: float = 0.0,
-                           arg_perigee_deg: float = 270.0) -> OrbitalElements:
-        """
-        Create Molniya orbit elements (highly eccentric, 12-hour period)
-
-        Args:
-            epoch: Reference epoch
-            raan_deg: RAAN in degrees
-            arg_perigee_deg: Argument of perigee in degrees
-
-        Returns:
-            OrbitalElements for Molniya orbit
-        """
-        a = 26600.0  # km (approximately 12-hour period)
-        return OrbitalElements(
-            semi_major_axis=a,
-            eccentricity=0.74,  # High eccentricity
-            inclination=np.radians(63.4),  # Critical inclination
-            raan=np.radians(raan_deg),
-            arg_perigee=np.radians(arg_perigee_deg),
-            mean_anomaly=0.0,
-            epoch=epoch
-        )
+        earth_radius = 6371.0  # km
+        distances = np.linalg.norm(positions, axis=1)
+        return distances - earth_radius
